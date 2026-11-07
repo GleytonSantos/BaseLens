@@ -1,0 +1,87 @@
+[package]
+name = "baselens"
+version = "0.1.0"
+edition = "2021"
+description = "BaseLens — see into every database. A free, private desktop database editor."
+authors = ["Gleyton Santos <gleyton.santos@estantemagica.com.br>"]
+license = "MIT"
+readme = "README.md"
+keywords = ["database", "sql", "postgres", "mysql", "sqlite"]
+categories = ["database", "gui"]
+build = "build.rs"
+
+[dependencies]
+eframe = "0.31"
+egui_extras = "0.31"
+egui_plot = "0.31"
+rusqlite = { version = "0.32", features = ["bundled"] }
+postgres = "0.19"
+postgres-native-tls = "0.5"
+native-tls = "0.2"
+mysql = "25"
+ureq = { version = "2", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = ["png"] }
+rfd = "0.15"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[build-dependencies]
+# Windows only: puts the icon and version info into baselens.exe
+winresource = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+
+# ---------------------------------------------------------------- packages
+
+[package.metadata.deb]
+section = "database"
+priority = "optional"
+depends = "$auto, libxkbcommon0, libgl1, libegl1"
+extended-description = """\
+BaseLens is a free, private desktop editor for SQLite, PostgreSQL and MySQL: \
+one navigator for every database, filters without SQL, smart autocomplete, \
+JSON viewer, charts, an ER diagram and an optional AI assistant (local or cloud)."""
+assets = [
+    ["target/release/baselens", "usr/bin/", "755"],
+    ["assets/baselens.desktop", "usr/share/applications/baselens.desktop", "644"],
+    ["packaging/linux/dev.baselens.BaseLens.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["assets/baselens.svg", "usr/share/icons/hicolor/scalable/apps/baselens.svg", "644"],
+    ["assets/baselens-16.png", "usr/share/icons/hicolor/16x16/apps/baselens.png", "644"],
+    ["assets/baselens-32.png", "usr/share/icons/hicolor/32x32/apps/baselens.png", "644"],
+    ["assets/baselens-48.png", "usr/share/icons/hicolor/48x48/apps/baselens.png", "644"],
+    ["assets/baselens-64.png", "usr/share/icons/hicolor/64x64/apps/baselens.png", "644"],
+    ["assets/baselens-128.png", "usr/share/icons/hicolor/128x128/apps/baselens.png", "644"],
+    ["assets/baselens-256.png", "usr/share/icons/hicolor/256x256/apps/baselens.png", "644"],
+    ["assets/baselens-512.png", "usr/share/icons/hicolor/512x512/apps/baselens.png", "644"],
+    ["LICENSE", "usr/share/doc/baselens/LICENSE", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Free, private desktop database editor"
+assets = [
+    { source = "target/release/baselens", dest = "/usr/bin/baselens", mode = "755" },
+    { source = "assets/baselens.desktop", dest = "/usr/share/applications/baselens.desktop", mode = "644" },
+    { source = "packaging/linux/dev.baselens.BaseLens.metainfo.xml", dest = "/usr/share/metainfo/dev.baselens.BaseLens.metainfo.xml", mode = "644" },
+    { source = "assets/baselens.svg", dest = "/usr/share/icons/hicolor/scalable/apps/baselens.svg", mode = "644" },
+    { source = "assets/baselens-48.png", dest = "/usr/share/icons/hicolor/48x48/apps/baselens.png", mode = "644" },
+    { source = "assets/baselens-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/baselens.png", mode = "644" },
+    { source = "assets/baselens-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/baselens.png", mode = "644" },
+    { source = "assets/baselens-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/baselens.png", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/baselens/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+libxkbcommon = "*"
+libglvnd-egl = "*"
+libglvnd-glx = "*"

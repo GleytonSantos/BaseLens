@@ -1,0 +1,14 @@
+# build output
+/target/
+/dist/
+/packaging/arch/src/
+/packaging/arch/pkg/
+/packaging/arch/*.pkg.tar.*
+
+# screenshots made by --screenshot and the test robot
+/shots/
+
+# editors
+.vscode/
+.idea/
+*.swp
