@@ -1,0 +1,741 @@
+{
+  "version": 1,
+  "values": [
+    {
+      "name": "primary sidebar width",
+      "group": "layout",
+      "value": 240,
+      "unit": "px",
+      "source": "renderer bundle primarySidebarWidth-v3 default"
+    },
+    {
+      "name": "secondary sidebar width",
+      "group": "layout",
+      "value": 240,
+      "unit": "px",
+      "source": "renderer bundle secondarySidebarWidth-v3 default"
+    },
+    {
+      "name": "main content min width",
+      "group": "layout",
+      "value": 200,
+      "unit": "px",
+      "source": "default.config.ini [ui.layout] mainContentMinWidth"
+    },
+    {
+      "name": "primary sidebar min width",
+      "group": "layout",
+      "value": 150,
+      "unit": "px",
+      "source": "default.config.ini [ui.layout] primarySidebarMinWidth"
+    },
+    {
+      "name": "secondary sidebar min width",
+      "group": "layout",
+      "value": 150,
+      "unit": "px",
+      "source": "default.config.ini [ui.layout] secondarySidebarMinWidth"
+    },
+    {
+      "name": "default sidebar section",
+      "group": "layout",
+      "value": "tables",
+      "source": "default.config.ini defaultGlobalSidebarItem"
+    },
+    {
+      "name": "table list item height",
+      "group": "layout",
+      "value": 26,
+      "unit": "px",
+      "source": "own design (roomier rows for usability; original 22.8 px from default.config.ini)"
+    },
+    {
+      "name": "recent connections limit",
+      "group": "layout",
+      "value": 10,
+      "source": "default.config.ini recentConnectionsLimit"
+    },
+    {
+      "name": "table page size",
+      "group": "grid",
+      "value": 100,
+      "unit": "rows",
+      "source": "default.config.ini [ui.tableTable] pageSize"
+    },
+    {
+      "name": "default column width",
+      "group": "grid",
+      "value": 125,
+      "unit": "px",
+      "source": "default.config.ini defaultColumnWidth"
+    },
+    {
+      "name": "min column width",
+      "group": "grid",
+      "value": 100,
+      "unit": "px",
+      "source": "default.config.ini minColumnWidth"
+    },
+    {
+      "name": "max initial column width",
+      "group": "grid",
+      "value": 500,
+      "unit": "px",
+      "source": "default.config.ini maxInitialWidth"
+    },
+    {
+      "name": "max column width",
+      "group": "grid",
+      "value": 1000,
+      "unit": "px",
+      "source": "default.config.ini maxColumnWidth"
+    },
+    {
+      "name": "cell edit trigger",
+      "group": "grid",
+      "value": "doubleclick",
+      "source": "default.config.ini editTrigger"
+    },
+    {
+      "name": "query max results",
+      "group": "grid",
+      "value": 50000,
+      "unit": "rows",
+      "source": "default.config.ini [ui.queryEditor] maxResults"
+    },
+    {
+      "name": "binary encoding",
+      "group": "grid",
+      "value": "hex",
+      "source": "default.config.ini binaryEncoding"
+    },
+    {
+      "name": "postgres connect timeout",
+      "group": "connections",
+      "value": 15000,
+      "unit": "ms",
+      "source": "default.config.ini [db.postgres] connectionTimeout"
+    },
+    {
+      "name": "mysql connect timeout",
+      "group": "connections",
+      "value": 60000,
+      "unit": "ms",
+      "source": "default.config.ini [db.mysql] comment says 1 minute (raw value 3600000)"
+    },
+    {
+      "name": "lock mode default",
+      "group": "security",
+      "value": "disabled",
+      "source": "default.config.ini [security] lockMode"
+    },
+    {
+      "name": "min PIN length",
+      "group": "security",
+      "value": 6,
+      "source": "default.config.ini minPinLength"
+    },
+    {
+      "name": "idle threshold",
+      "group": "security",
+      "value": 300,
+      "unit": "s",
+      "source": "default.config.ini idleThresholdSeconds"
+    },
+    {
+      "name": "idle check interval",
+      "group": "security",
+      "value": 30,
+      "unit": "s",
+      "source": "default.config.ini idleCheckIntervalSeconds"
+    },
+    {
+      "name": "AI default temperature",
+      "group": "ai",
+      "value": 0.7,
+      "source": "bks-ai-shell src/config.ts defaultTemperature"
+    },
+    {
+      "name": "Ollama base URL",
+      "group": "ai",
+      "value": "http://localhost:11434",
+      "source": "bks-ai-shell bundle string / OllamaProvider.ts"
+    },
+    {
+      "name": "Anthropic base URL",
+      "group": "ai",
+      "value": "https://api.anthropic.com/v1",
+      "source": "bks-ai-shell bundle string"
+    },
+    {
+      "name": "OpenAI base URL",
+      "group": "ai",
+      "value": "https://api.openai.com/v1",
+      "source": "bks-ai-shell bundle string"
+    },
+    {
+      "name": "Google base URL",
+      "group": "ai",
+      "value": "https://generativelanguage.googleapis.com/v1beta",
+      "source": "bks-ai-shell bundle string"
+    },
+    {
+      "name": "allow read-only AI queries without asking",
+      "group": "ai",
+      "value": false,
+      "source": "bks-ai-shell src/stores/configuration.ts default"
+    },
+    {
+      "name": "Claude Code path (first tried)",
+      "group": "ai",
+      "value": "~/.local/bin/claude",
+      "source": "person's request (native install path)"
+    },
+    {
+      "name": "default theme (Linux)",
+      "group": "theme",
+      "value": "system",
+      "source": "main.js settings migration linuxDefault='system'"
+    },
+    {
+      "name": "system theme dark when portal color-scheme equals",
+      "group": "theme",
+      "value": 1,
+      "source": "function 0xb2eb7c0 (dark_mode_manager_linux Read reply)"
+    },
+    {
+      "name": "system theme portal namespace",
+      "group": "theme",
+      "value": "org.freedesktop.appearance",
+      "source": "function 0xb2eb4c0 (SettingChanged handler)"
+    },
+    {
+      "name": "system theme portal key",
+      "group": "theme",
+      "value": "color-scheme",
+      "source": "function 0xb2eb4c0 (SettingChanged handler)"
+    },
+    {
+      "name": "system theme re-check interval",
+      "group": "theme",
+      "value": 30,
+      "unit": "s",
+      "source": "default.config.ini idleCheckIntervalSeconds (stand-in for the 0xb2eb4c0 signal)"
+    },
+    {
+      "name": "SQL editor font size",
+      "group": "editor",
+      "value": 14,
+      "unit": "px",
+      "source": "renderer settings.editorFontSize?.value || 14"
+    },
+    {
+      "name": "password store switch values",
+      "group": "security",
+      "value": "basic | gnome-libsecret | kwallet | kwallet5 | kwallet6",
+      "source": "function 0x7505630 (key_storage_util_linux)"
+    },
+    {
+      "name": "password store auto on KDE",
+      "group": "security",
+      "value": "kwallet",
+      "source": "function 0x7505630 (desktop environment switch)"
+    },
+    {
+      "name": "password store auto elsewhere",
+      "group": "security",
+      "value": "gnome-libsecret",
+      "source": "function 0x7505630 (desktop environment switch)"
+    },
+    {
+      "name": "app code only from own package",
+      "group": "security",
+      "value": true,
+      "source": "function 0x2bc6690 (appSearchPaths / IsOnlyLoadAppFromAsarEnabled)"
+    },
+    {
+      "name": "theme Midnight bg",
+      "group": "theme",
+      "value": "#0d1017",
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "theme Midnight accent",
+      "group": "theme",
+      "value": "#8b7bff",
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "theme Midnight second accent",
+      "group": "theme",
+      "value": "#38d6c4",
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "theme Daylight bg",
+      "group": "theme",
+      "value": "#f3f4f9",
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "theme Daylight accent",
+      "group": "theme",
+      "value": "#6d4aff",
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "theme Ocean accent",
+      "group": "theme",
+      "value": "#2dd4bf",
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "theme Latte accent",
+      "group": "theme",
+      "value": "#d9480f",
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "corner radius (cards)",
+      "group": "theme",
+      "value": 12,
+      "unit": "px",
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "grid row height",
+      "group": "grid",
+      "value": 26,
+      "unit": "px",
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "icon rail width",
+      "group": "layout",
+      "value": 56,
+      "unit": "px",
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "type-to-search delay",
+      "group": "filters",
+      "value": 350,
+      "unit": "ms",
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "autocomplete max suggestions",
+      "group": "editor",
+      "value": 14,
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "autocomplete keyword casing",
+      "group": "editor",
+      "value": "preserve",
+      "source": "default.config.ini [ui.queryEditor.autocomplete] keywordCasing"
+    },
+    {
+      "name": "autocomplete quote identifiers",
+      "group": "editor",
+      "value": "auto",
+      "source": "default.config.ini [ui.queryEditor.autocomplete] quoteIdentifiers"
+    },
+    {
+      "name": "command palette shortcut",
+      "group": "controls",
+      "value": "Ctrl+K / Ctrl+P",
+      "source": "own design (person asked for a look different from the original)"
+    },
+    {
+      "name": "LIKE escape character",
+      "group": "filters",
+      "value": "!",
+      "source": "function 0x6934ee0 (escape must be one char, not % or _)"
+    },
+    {
+      "name": "LIKE pattern max bytes",
+      "group": "filters",
+      "value": 50000,
+      "unit": "bytes",
+      "source": "SQLite hard-limit table 0x20fd990 / check in 0x6934ee0"
+    },
+    {
+      "name": "SQL expression depth limit",
+      "group": "filters",
+      "value": 1000,
+      "source": "SQLite hard-limit table 0x20fd990"
+    },
+    {
+      "name": "search-everywhere max columns",
+      "group": "filters",
+      "value": 900,
+      "source": "90% of expression depth 1000 (0x20fd990)"
+    },
+    {
+      "name": "CmdOrCtrl key code on Linux",
+      "group": "controls",
+      "value": "0x11 (Control)",
+      "source": "key table 0xbb7cfc8 / 0xbb7cff8 (relocations 0x9572f8, 0x957328)"
+    },
+    {
+      "name": "cmd / command key code",
+      "group": "controls",
+      "value": "0x5B (Super)",
+      "source": "key table 0xbb7cfb0 / 0xbb7cfe0"
+    },
+    {
+      "name": "ask bot score exact name",
+      "group": "ask",
+      "value": 120,
+      "source": "own design (round 5)"
+    },
+    {
+      "name": "ask bot score word part",
+      "group": "ask",
+      "value": 100,
+      "source": "own design (round 5)"
+    },
+    {
+      "name": "ask bot score prefix",
+      "group": "ask",
+      "value": 70,
+      "source": "own design (round 5)"
+    },
+    {
+      "name": "ask bot score contains",
+      "group": "ask",
+      "value": 50,
+      "source": "own design (round 5)"
+    },
+    {
+      "name": "ask bot max tables searched in data",
+      "group": "ask",
+      "value": 80,
+      "source": "own design (round 5)"
+    },
+    {
+      "name": "navigator levels",
+      "group": "layout",
+      "value": "connection > database > schema > table > column",
+      "source": "own design (round 5)"
+    },
+    {
+      "name": "UI font preference",
+      "group": "theme",
+      "value": "Adwaita Sans, Inter, Noto Sans (system)",
+      "source": "own design (round 5)"
+    },
+    {
+      "name": "SQLite LIKE case folding",
+      "group": "filters",
+      "value": "ASCII only (c1|c2 <= 0x7f)",
+      "source": "function 0x68580d0 (patternCompare) with table 0x20fd090"
+    },
+    {
+      "name": "SQLite case table A..Z offset",
+      "group": "filters",
+      "value": "0x41-0x5A -> 0x61-0x7A",
+      "source": "table 0x20fd090"
+    },
+    {
+      "name": "case variants tried for non-ASCII text (SQLite)",
+      "group": "filters",
+      "value": "as typed, lower, UPPER, Capitalised",
+      "source": "rule from function 0x68580d0"
+    },
+    {
+      "name": "brand name",
+      "group": "brand",
+      "value": "BaseLens",
+      "source": "own design (BaseLens identity)"
+    },
+    {
+      "name": "brand tagline",
+      "group": "brand",
+      "value": "See into every database.",
+      "source": "own design (BaseLens identity)"
+    },
+    {
+      "name": "brand gradient start",
+      "group": "brand",
+      "value": "#8b7bff",
+      "source": "own design (BaseLens identity)"
+    },
+    {
+      "name": "brand gradient end",
+      "group": "brand",
+      "value": "#38d6c4",
+      "source": "own design (BaseLens identity)"
+    },
+    {
+      "name": "logo tile corner (of size)",
+      "group": "brand",
+      "value": 0.28,
+      "source": "own design (BaseLens identity)"
+    },
+    {
+      "name": "logo lens radius (of size)",
+      "group": "brand",
+      "value": 0.235,
+      "source": "own design (BaseLens identity)"
+    },
+    {
+      "name": "logo ring stroke (of size)",
+      "group": "brand",
+      "value": 0.075,
+      "source": "own design (BaseLens identity)"
+    },
+    {
+      "name": "window icon size",
+      "group": "brand",
+      "value": 128,
+      "unit": "px",
+      "source": "own design (BaseLens identity)"
+    },
+    {
+      "name": "value suggestions sample rows",
+      "group": "editor",
+      "value": 10000,
+      "source": "own design (round 8)"
+    },
+    {
+      "name": "value suggestions distinct values kept",
+      "group": "editor",
+      "value": 50,
+      "source": "own design (round 8)"
+    },
+    {
+      "name": "value suggestions shown",
+      "group": "editor",
+      "value": 14,
+      "source": "own design (round 8)"
+    },
+    {
+      "name": "value max length",
+      "group": "editor",
+      "value": 80,
+      "unit": "chars",
+      "source": "own design (round 8)"
+    },
+    {
+      "name": "learned words kept per connection",
+      "group": "editor",
+      "value": 500,
+      "source": "own design (round 8)"
+    },
+    {
+      "name": "learned columns kept per connection",
+      "group": "editor",
+      "value": 300,
+      "source": "own design (round 8)"
+    },
+    {
+      "name": "learned values kept per column",
+      "group": "editor",
+      "value": 30,
+      "source": "own design (round 8)"
+    },
+    {
+      "name": "SQLite affinity: char/clob/text",
+      "group": "editor",
+      "value": "TEXT",
+      "source": "function 0x68a7000 (SQLite affinity rule, inlined sqlite3AffinityType)"
+    },
+    {
+      "name": "SQLite affinity: blob (while NUMERIC/REAL)",
+      "group": "editor",
+      "value": "BLOB",
+      "source": "function 0x68a7000 (SQLite affinity rule, inlined sqlite3AffinityType)"
+    },
+    {
+      "name": "SQLite affinity: real/floa/doub (while NUMERIC)",
+      "group": "editor",
+      "value": "REAL",
+      "source": "function 0x68a7000 (SQLite affinity rule, inlined sqlite3AffinityType)"
+    },
+    {
+      "name": "SQLite affinity: ...int",
+      "group": "editor",
+      "value": "INTEGER",
+      "source": "function 0x68a7000 (SQLite affinity rule, inlined sqlite3AffinityType)"
+    },
+    {
+      "name": "SQLite affinity: anything else",
+      "group": "editor",
+      "value": "NUMERIC",
+      "source": "function 0x68a7000 (SQLite affinity rule, inlined sqlite3AffinityType)"
+    },
+    {
+      "name": "SQLite affinity: no declared type",
+      "group": "editor",
+      "value": "BLOB",
+      "source": "SQLite column rule (declared type empty)"
+    },
+    {
+      "name": "suggested value unquoted when affinity is",
+      "group": "editor",
+      "value": "INTEGER, REAL or NUMERIC",
+      "source": "function 0x68a7000 (SQLite affinity rule, inlined sqlite3AffinityType)"
+    },
+    {
+      "name": "chart points shown by default",
+      "group": "charts",
+      "value": 20,
+      "source": "own design (round 10)"
+    },
+    {
+      "name": "chart points max",
+      "group": "charts",
+      "value": 200,
+      "source": "own design (round 10)"
+    },
+    {
+      "name": "chart label max characters",
+      "group": "charts",
+      "value": 14,
+      "source": "own design (round 10)"
+    },
+    {
+      "name": "hide JSON inspector below width",
+      "group": "layout",
+      "value": 1000,
+      "unit": "px",
+      "source": "own design (round 10)"
+    },
+    {
+      "name": "hide side panel below width",
+      "group": "layout",
+      "value": 860,
+      "unit": "px",
+      "source": "own design (round 10)"
+    },
+    {
+      "name": "side panel max share of window",
+      "group": "layout",
+      "value": 0.3,
+      "source": "own design (round 10)"
+    },
+    {
+      "name": "robot step timeout",
+      "group": "testing",
+      "value": 400,
+      "unit": "frames",
+      "source": "own design (round 10)"
+    },
+    {
+      "name": "chart sum: integers split above",
+      "group": "charts",
+      "value": 4503599627370496,
+      "source": "function 0x693d4b0 (SQLite sumStep, Kahan-Babuska-Neumaier)"
+    },
+    {
+      "name": "chart sum: integer split modulus",
+      "group": "charts",
+      "value": 16384,
+      "source": "function 0x693d4b0 (SQLite sumStep, Kahan-Babuska-Neumaier)"
+    },
+    {
+      "name": "chart sum algorithm",
+      "group": "charts",
+      "value": "exact integers, then Kahan-Babuska-Neumaier compensated sum",
+      "source": "function 0x693d4b0 (SQLite sumStep, Kahan-Babuska-Neumaier)"
+    },
+    {
+      "name": "OS user lookup order",
+      "group": "connections",
+      "value": "SUDO_USER, C9_USER, LOGNAME, USER, LNAME, USERNAME, then passwd (getpwuid_r), then id -un, then no-username-<uid>",
+      "source": "function 0x2dd9530 (os.getUserInfo → uv_os_get_passwd) + preload.js username module"
+    },
+    {
+      "name": "SQL keyword count",
+      "group": "editor",
+      "value": 147,
+      "source": "keyword tables 0x20fd320 (text), 0x20fd5c0 (offsets), 0x20fd6f0 (lengths) used by function 0x6903ab0 (SQLite identifier writer, keyword lookup)"
+    },
+    {
+      "name": "Keyword case fold",
+      "group": "editor",
+      "value": "each byte & 0xdf before comparing, so select = SELECT = Select",
+      "source": "function 0x6903ab0 (SQLite identifier writer, keyword lookup)"
+    },
+    {
+      "name": "Keyword hash",
+      "group": "editor",
+      "value": "((charMap[first] << 2) ^ (charMap[last] * 3) ^ length) % 127, table 0x20fdeb0, chain 0x20fdfd0",
+      "source": "function 0x6903ab0 (SQLite identifier writer, keyword lookup), charMap 0x20fd090"
+    },
+    {
+      "name": "Keyword minimum length",
+      "group": "editor",
+      "value": 2,
+      "source": "function 0x6903ab0 (SQLite identifier writer, keyword lookup) (cmp r8d, 2)"
+    },
+    {
+      "name": "Identifier quote rule",
+      "group": "editor",
+      "value": "quote if empty, first byte is a digit, any byte is not letter/digit/_ (ctype & 0x06), or a keyword in any case; embedded \" doubled",
+      "source": "function 0x6903ab0 (SQLite identifier writer, keyword lookup) (ctype table 0x20fd210)"
+    },
+    {
+      "name": "Identifier byte mask",
+      "group": "editor",
+      "value": "0x46",
+      "source": "function 0x685a620 (SQLite tokenizer sqlite3GetToken), ctype table 0x20fd210"
+    },
+    {
+      "name": "Hex digit ctype bit",
+      "group": "editor",
+      "value": "0x08",
+      "source": "function 0x685a620 (SQLite tokenizer sqlite3GetToken), ctype table 0x20fd210"
+    },
+    {
+      "name": "Tokenizer character classes",
+      "group": "editor",
+      "value": "$=4, @ : #=5, ?=6, quotes=8, [=9, -=11, /=16, .=26, x=0, digits=3",
+      "source": "function 0x685a620 (SQLite tokenizer sqlite3GetToken), class table 0x20fe070"
+    },
+    {
+      "name": "Quoted text escape",
+      "group": "editor",
+      "value": "a doubled quote stays inside the string or name",
+      "source": "function 0x685a620 (SQLite tokenizer sqlite3GetToken)"
+    },
+    {
+      "name": "Number forms",
+      "group": "editor",
+      "value": "0x + hex digits; digits [. digits] [e|E [+|-] digits]; _ between digits",
+      "source": "function 0x685a620 (SQLite tokenizer sqlite3GetToken)"
+    },
+    {
+      "name": "result first batch rows",
+      "group": "connections",
+      "value": 200,
+      "source": "BaseLens design (db.rs / debug.rs), checked with test live_pg against PostgreSQL 17; batch size taken from DBeaver's default fetch size the person cited"
+    },
+    {
+      "name": "result max batch rows",
+      "group": "connections",
+      "value": 6400,
+      "source": "BaseLens design (db.rs / debug.rs), checked with test live_pg against PostgreSQL 17; batches double from 200 (200·2^5)"
+    },
+    {
+      "name": "column prefetch tables (one by one, SQLite)",
+      "group": "connections",
+      "value": 300,
+      "source": "BaseLens design (db.rs / debug.rs), checked with test live_pg against PostgreSQL 17"
+    },
+    {
+      "name": "bench runs",
+      "group": "debug",
+      "value": 10,
+      "source": "person's request (--bench runs the query 10 times)"
+    },
+    {
+      "name": "debug traces kept",
+      "group": "debug",
+      "value": 50,
+      "source": "BaseLens design (db.rs / debug.rs), checked with test live_pg against PostgreSQL 17"
+    }
+  ]
+}
