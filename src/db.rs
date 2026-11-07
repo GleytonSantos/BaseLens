@@ -1,0 +1,1603 @@
+//! Database connections. Each open connection runs on its own worker thread
+//! and talks to the UI through channels, so the window never freezes.
+
+use serde::{Deserialize, Serialize};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::{Duration, Instant};
+
+pub const PG_CONNECT_TIMEOUT_MS: u64 = 15000; // MECHANICS: [db.postgres] connectionTimeout
+pub const MYSQL_CONNECT_TIMEOUT_MS: u64 = 60000; // MECHANICS: [db.mysql] "1 minute"
+/// Rows asked from the server per round trip (first batch); later batches
+/// double up to PG_FETCH_MAX so big results don't need hundreds of trips.
+pub const PG_FETCH_BATCH: usize = 200;
+pub const PG_FETCH_MAX: usize = 6400;
+/// Tables whose columns are loaded one by one when a database can't list
+/// them all in one query (SQLite).
+pub const COLUMNS_PREFETCH_TABLES: usize = 300;
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug, Default)]
+pub enum DbKind {
+    #[default]
+    Sqlite,
+    Postgres,
+    Mysql,
+}
+
+impl DbKind {
+    pub const ALL: [DbKind; 3] = [DbKind::Sqlite, DbKind::Postgres, DbKind::Mysql];
+    pub fn label(self) -> &'static str {
+        match self {
+            DbKind::Sqlite => "SQLite",
+            DbKind::Postgres => "PostgreSQL",
+            DbKind::Mysql => "MySQL / MariaDB",
+        }
+    }
+    pub fn short(self) -> &'static str {
+        match self {
+            DbKind::Sqlite => "sqlite",
+            DbKind::Postgres => "postgresql",
+            DbKind::Mysql => "mysql",
+        }
+    }
+    pub fn default_port(self) -> u16 {
+        match self {
+            DbKind::Sqlite => 0,
+            DbKind::Postgres => 5432,
+            DbKind::Mysql => 3306,
+        }
+    }
+    pub fn quote(self, ident: &str) -> String {
+        match self {
+            DbKind::Mysql => format!("`{}`", ident.replace('`', "``")),
+            _ => format!("\"{}\"", ident.replace('"', "\"\"")),
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(default)]
+pub struct ConnConfig {
+    pub id: u64,
+    pub name: String,
+    pub kind: DbKind,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    /// Encrypted with store::encrypt; never stored in clear text.
+    pub password_enc: String,
+    pub save_password: bool,
+    pub database: String,
+    pub path: String,
+    pub ssl: bool,
+    pub ssl_verify: bool,
+    pub read_only: bool,
+    pub color: [u8; 3],
+}
+
+impl Default for ConnConfig {
+    fn default() -> Self {
+        ConnConfig {
+            id: 0,
+            name: String::new(),
+            kind: DbKind::Postgres,
+            host: "localhost".into(),
+            port: 5432,
+            user: String::new(),
+            password_enc: String::new(),
+            save_password: true,
+            database: String::new(),
+            path: String::new(),
+            ssl: false,
+            ssl_verify: true,
+            read_only: false,
+            color: [74, 208, 255],
+        }
+    }
+}
+
+impl ConnConfig {
+    pub fn subtitle(&self) -> String {
+        match self.kind {
+            DbKind::Sqlite => self.path.clone(),
+            _ => format!("{}@{}:{}/{}", self.user, self.host, self.port, self.database),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Cell {
+    Null,
+    Int(i64),
+    Float(f64),
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+impl Cell {
+    pub fn display(&self) -> String {
+        match self {
+            Cell::Null => "(NULL)".into(),
+            Cell::Int(i) => i.to_string(),
+            Cell::Float(f) => {
+                if f.fract() == 0.0 && f.abs() < 1e15 {
+                    format!("{f:.1}")
+                } else {
+                    f.to_string()
+                }
+            }
+            Cell::Text(s) => s.clone(),
+            Cell::Bytes(b) => {
+                // MECHANICS: binaryEncoding = hex
+                let mut s = String::from("0x");
+                for x in b.iter().take(64) {
+                    s.push_str(&format!("{x:02x}"));
+                }
+                if b.len() > 64 {
+                    s.push('…');
+                }
+                s
+            }
+        }
+    }
+    pub fn is_null(&self) -> bool {
+        matches!(self, Cell::Null)
+    }
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Cell::Int(i) => Some(*i as f64),
+            Cell::Float(f) => Some(*f),
+            Cell::Text(s) => s.trim().parse().ok(),
+            _ => None,
+        }
+    }
+    /// Text holding a JSON object or array.
+    pub fn json(&self) -> Option<serde_json::Value> {
+        if let Cell::Text(s) = self {
+            let t = s.trim_start();
+            if t.starts_with('{') || t.starts_with('[') {
+                return serde_json::from_str(s).ok();
+            }
+        }
+        None
+    }
+    pub fn to_json(&self) -> serde_json::Value {
+        use serde_json::Value;
+        match self {
+            Cell::Null => Value::Null,
+            Cell::Int(i) => Value::from(*i),
+            Cell::Float(f) => serde_json::Number::from_f64(*f)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+            Cell::Text(s) => self.json().unwrap_or_else(|| Value::String(s.clone())),
+            Cell::Bytes(_) => Value::String(self.display()),
+        }
+    }
+    pub fn sql_literal(&self) -> String {
+        match self {
+            Cell::Null => "NULL".into(),
+            Cell::Int(i) => i.to_string(),
+            Cell::Float(f) => f.to_string(),
+            Cell::Text(s) => sql_string(s),
+            Cell::Bytes(b) => {
+                let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+                format!("X'{h}'")
+            }
+        }
+    }
+}
+
+pub fn sql_string(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct QueryResult {
+    pub sql: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Cell>>,
+    pub affected: Option<u64>,
+    pub elapsed_ms: f64,
+    pub truncated: bool,
+    /// Round trips used to read the rows (0 = all in one reply).
+    pub batches: usize,
+}
+
+/// Where the time of one query went (shown by the debug mode).
+#[derive(Clone, Debug, Default)]
+pub struct Timing {
+    /// Waiting behind other work on the connection's queue.
+    pub queue_ms: f64,
+    /// Sending the query and receiving every row.
+    pub run_ms: f64,
+    pub rows: usize,
+    /// Size of the received values as text.
+    pub bytes: usize,
+    pub batches: usize,
+    /// Requests still waiting on the queue when this one started.
+    pub queue_behind: usize,
+}
+
+/// Where the time of opening a connection went (debug mode only measures
+/// DNS and TCP separately; TLS + login is the rest).
+#[derive(Clone, Debug, Default)]
+pub struct ConnectTiming {
+    pub dns_ms: f64,
+    pub tcp_ms: f64,
+    pub tls_login_ms: f64,
+    pub total_ms: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct TableInfo {
+    pub schema: Option<String>,
+    pub name: String,
+    pub is_view: bool,
+}
+
+impl TableInfo {
+    pub fn key(&self) -> String {
+        match &self.schema {
+            Some(s) => format!("{s}.{}", self.name),
+            None => self.name.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ColumnInfo {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+    pub pk: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ForeignKey {
+    pub from_table: String,
+    pub from_col: String,
+    pub to_table: String,
+    pub to_col: String,
+}
+
+pub enum Request {
+    Refresh,
+    Columns { schema: Option<String>, table: String },
+    /// Columns of every table at once (one query on Postgres/MySQL).
+    AllColumns,
+    Query { tag: u64, sql: String, max_rows: usize, sent: Instant },
+    Graph { tag: u64 },
+}
+
+impl Request {
+    /// Schema questions go to the second connection so they never make a
+    /// query wait.
+    fn is_meta(&self) -> bool {
+        matches!(self, Request::Columns { .. } | Request::AllColumns | Request::Graph { .. })
+    }
+}
+
+pub enum Response {
+    Connected { server: String, databases: Vec<String>, current_db: String, timing: ConnectTiming },
+    Failed(String),
+    Tables(Vec<TableInfo>),
+    Columns { table: String, cols: Result<Vec<ColumnInfo>, String> },
+    AllColumns(Result<Vec<(String, Vec<ColumnInfo>)>, String>),
+    QueryDone { tag: u64, results: Result<Vec<QueryResult>, String>, timing: Timing },
+    Graph { tag: u64, tables: Vec<(String, Vec<ColumnInfo>)>, fks: Vec<ForeignKey> },
+}
+
+trait Backend {
+    fn server(&mut self) -> String;
+    fn databases(&mut self) -> Vec<String>;
+    fn current_db(&mut self) -> String;
+    fn tables(&mut self) -> Result<Vec<TableInfo>, String>;
+    fn columns(&mut self, schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>, String>;
+    fn foreign_keys(&mut self, tables: &[TableInfo]) -> Vec<ForeignKey>;
+    fn run(&mut self, sql: &str, max_rows: usize) -> Result<Vec<QueryResult>, String>;
+    /// Columns of every table, keyed like TableInfo::key. Default: one
+    /// question per table (fine for local SQLite files).
+    fn all_columns(&mut self) -> Result<Vec<(String, Vec<ColumnInfo>)>, String> {
+        let tables = self.tables()?;
+        Ok(tables
+            .iter()
+            .take(COLUMNS_PREFETCH_TABLES)
+            .map(|t| (t.key(), self.columns(t.schema.as_deref(), &t.name).unwrap_or_default()))
+            .collect())
+    }
+}
+
+pub struct Handle {
+    /// Queries, refreshes: the main connection.
+    pub tx: Sender<Request>,
+    /// Schema questions: a second connection (None for SQLite, which is local).
+    meta: Option<Sender<Request>>,
+    pub rx: Receiver<Response>,
+    /// Requests waiting on the main connection right now.
+    pub queue: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Handle {
+    pub fn send(&self, req: Request) -> bool {
+        use std::sync::atomic::Ordering;
+        if req.is_meta() {
+            if let Some(m) = &self.meta {
+                return m.send(req).is_ok();
+            }
+        }
+        self.queue.fetch_add(1, Ordering::SeqCst);
+        let ok = self.tx.send(req).is_ok();
+        if !ok {
+            self.queue.fetch_sub(1, Ordering::SeqCst);
+        }
+        ok
+    }
+    pub fn queued(&self) -> usize {
+        self.queue.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+fn open_backend(cfg: &ConnConfig, password: &str) -> Result<Box<dyn Backend>, String> {
+    match cfg.kind {
+        DbKind::Sqlite => open_sqlite(cfg).map(|b| Box::new(b) as Box<dyn Backend>),
+        DbKind::Postgres => open_pg(cfg, password).map(|b| Box::new(b) as Box<dyn Backend>),
+        DbKind::Mysql => open_mysql(cfg, password).map(|b| Box::new(b) as Box<dyn Backend>),
+    }
+}
+
+/// DNS and TCP measured on their own (debug mode): the drivers don't report
+/// their steps, so the rest of the connect time is TLS + login.
+fn probe_network(cfg: &ConnConfig) -> (f64, f64) {
+    use std::net::{TcpStream, ToSocketAddrs};
+    if cfg.kind == DbKind::Sqlite {
+        return (0.0, 0.0);
+    }
+    let t = Instant::now();
+    let addrs: Vec<_> = (cfg.host.as_str(), cfg.port).to_socket_addrs().map(|a| a.collect()).unwrap_or_default();
+    let dns = t.elapsed().as_secs_f64() * 1000.0;
+    let t = Instant::now();
+    let tcp = addrs.first().map(|a| TcpStream::connect_timeout(a, Duration::from_secs(5)).is_ok()).unwrap_or(false);
+    let tcp_ms = if tcp { t.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
+    (dns, tcp_ms)
+}
+
+/// Size of the values as text (what came over the wire, roughly).
+pub fn result_bytes(r: &QueryResult) -> usize {
+    r.rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|c| match c {
+                    Cell::Null => 0,
+                    Cell::Int(_) | Cell::Float(_) => 8,
+                    Cell::Text(t) => t.len(),
+                    Cell::Bytes(b) => b.len(),
+                })
+                .sum::<usize>()
+        })
+        .sum()
+}
+
+fn graph_of(b: &mut Box<dyn Backend>) -> (Vec<(String, Vec<ColumnInfo>)>, Vec<ForeignKey>) {
+    let tables = b.tables().unwrap_or_default();
+    let all: std::collections::HashMap<String, Vec<ColumnInfo>> = b.all_columns().unwrap_or_default().into_iter().collect();
+    let out = tables
+        .iter()
+        .filter(|t| !t.is_view)
+        .take(80)
+        .map(|t| (t.name.clone(), all.get(&t.key()).cloned().unwrap_or_default()))
+        .collect();
+    let fks = b.foreign_keys(&tables);
+    (out, fks)
+}
+
+/// Answers a schema question (on whichever connection runs it).
+fn answer_meta(b: &mut Box<dyn Backend>, req: Request, tx: &Sender<Response>) {
+    match req {
+        Request::Columns { schema, table } => {
+            let cols = b.columns(schema.as_deref(), &table);
+            let key = match &schema {
+                Some(s) => format!("{s}.{table}"),
+                None => table.clone(),
+            };
+            let _ = tx.send(Response::Columns { table: key, cols });
+        }
+        Request::AllColumns => {
+            let _ = tx.send(Response::AllColumns(b.all_columns()));
+        }
+        Request::Graph { tag } => {
+            let (tables, fks) = graph_of(b);
+            let _ = tx.send(Response::Graph { tag, tables, fks });
+        }
+        _ => {}
+    }
+}
+
+pub fn spawn(cfg: ConnConfig, password: String) -> Handle {
+    use std::sync::atomic::Ordering;
+    let (tx_req, rx_req) = channel::<Request>();
+    let (tx_res, rx_res) = channel::<Response>();
+    let queue = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // second connection for schema questions; opened on the first question,
+    // which only comes after the main connection worked
+    let meta = if cfg.kind == DbKind::Sqlite {
+        None
+    } else {
+        let (tx_meta, rx_meta) = channel::<Request>();
+        let (cfg2, pw2, tx2) = (cfg.clone(), password.clone(), tx_res.clone());
+        std::thread::spawn(move || {
+            let mut b: Option<Box<dyn Backend>> = None;
+            while let Ok(req) = rx_meta.recv() {
+                if b.is_none() {
+                    match open_backend(&cfg2, &pw2) {
+                        Ok(x) => b = Some(x),
+                        Err(e) => {
+                            let _ = match req {
+                                Request::Columns { table, .. } => tx2.send(Response::Columns { table, cols: Err(e) }),
+                                Request::AllColumns => tx2.send(Response::AllColumns(Err(e))),
+                                Request::Graph { tag } => tx2.send(Response::Graph { tag, tables: vec![], fks: vec![] }),
+                                _ => Ok(()),
+                            };
+                            continue;
+                        }
+                    }
+                }
+                if let Some(b) = b.as_mut() {
+                    answer_meta(b, req, &tx2);
+                }
+            }
+        });
+        Some(tx_meta)
+    };
+    let q = queue.clone();
+    std::thread::spawn(move || {
+        let t0 = Instant::now();
+        let (dns_ms, tcp_ms) = if crate::debug::on() { probe_network(&cfg) } else { (0.0, 0.0) };
+        let t1 = Instant::now();
+        let mut b = match open_backend(&cfg, &password) {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = tx_res.send(Response::Failed(e));
+                return;
+            }
+        };
+        let login_ms = t1.elapsed().as_secs_f64() * 1000.0;
+        let timing = ConnectTiming {
+            dns_ms,
+            tcp_ms,
+            tls_login_ms: (login_ms - if crate::debug::on() { dns_ms + tcp_ms } else { 0.0 }).max(0.0),
+            total_ms: t0.elapsed().as_secs_f64() * 1000.0,
+        };
+        let server = b.server();
+        let databases = b.databases();
+        let current_db = b.current_db();
+        let _ = tx_res.send(Response::Connected { server, databases, current_db, timing });
+        let send_tables = |b: &mut Box<dyn Backend>| match b.tables() {
+            Ok(t) => {
+                let _ = tx_res.send(Response::Tables(t));
+            }
+            Err(e) => {
+                let _ = tx_res.send(Response::QueryDone { tag: 0, results: Err(e), timing: Timing::default() });
+            }
+        };
+        send_tables(&mut b);
+        while let Ok(req) = rx_req.recv() {
+            let behind = q.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
+            match req {
+                Request::Refresh => send_tables(&mut b),
+                Request::Query { tag, sql, max_rows, sent } => {
+                    let queue_ms = sent.elapsed().as_secs_f64() * 1000.0;
+                    let t = Instant::now();
+                    let results = b.run(&sql, max_rows);
+                    let mut timing = Timing { queue_ms, run_ms: t.elapsed().as_secs_f64() * 1000.0, queue_behind: behind, ..Default::default() };
+                    if let Ok(r) = &results {
+                        timing.rows = r.iter().map(|x| x.rows.len()).sum();
+                        timing.batches = r.iter().map(|x| x.batches).sum();
+                        if crate::debug::on() {
+                            timing.bytes = r.iter().map(result_bytes).sum();
+                        }
+                    }
+                    if tx_res.send(Response::QueryDone { tag, results, timing }).is_err() {
+                        break;
+                    }
+                }
+                other => answer_meta(&mut b, other, &tx_res),
+            }
+        }
+    });
+    Handle { tx: tx_req, meta, rx: rx_res, queue }
+}
+
+/// Splits a script into statements on `;`, ignoring semicolons inside quotes
+/// and comments.
+pub fn split_statements(sql: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let chars: Vec<char> = sql.chars().collect();
+    let mut i = 0;
+    let mut quote: Option<char> = None;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = quote {
+            cur.push(c);
+            if c == q {
+                quote = None;
+            }
+        } else if c == '\'' || c == '"' || c == '`' {
+            quote = Some(c);
+            cur.push(c);
+        } else if c == '-' && chars.get(i + 1) == Some(&'-') {
+            while i < chars.len() && chars[i] != '\n' {
+                cur.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        } else if c == '/' && chars.get(i + 1) == Some(&'*') {
+            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                cur.push(chars[i]);
+                i += 1;
+            }
+            cur.push_str("*/");
+            i += 2;
+            continue;
+        } else if c == ';' {
+            if !strip_comments(&cur).trim().is_empty() {
+                out.push(cur.trim().to_string());
+            }
+            cur.clear();
+        } else {
+            cur.push(c);
+        }
+        i += 1;
+    }
+    if !strip_comments(&cur).trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+fn strip_comments(s: &str) -> String {
+    s.lines()
+        .map(|l| l.split("--").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// True when every statement only reads data (used for read-only connections
+/// and for the AI "run without asking" rule).
+pub fn is_read_query(sql: &str) -> bool {
+    let stmts = split_statements(sql);
+    !stmts.is_empty()
+        && stmts.iter().all(|s| {
+            let s = strip_comments(s);
+            let first = s
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_uppercase();
+            let ok_first = matches!(
+                first.as_str(),
+                "SELECT" | "WITH" | "SHOW" | "EXPLAIN" | "DESCRIBE" | "DESC" | "VALUES" | "TABLE"
+            ) || (first == "PRAGMA" && !s.contains('='));
+            let upper = s.to_ascii_uppercase();
+            let writes = [
+                "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE", "INTO", "GRANT",
+                "REVOKE", "REPLACE", "MERGE", "ATTACH", "VACUUM",
+            ];
+            // Conservative: any write keyword anywhere (even inside a string)
+            // makes it count as a write.
+            ok_first
+                && !upper
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .any(|t| writes.contains(&t))
+        })
+}
+
+// ---------------------------------------------------------------- SQLite
+
+struct Sqlite {
+    c: rusqlite::Connection,
+    path: String,
+}
+
+fn open_sqlite(cfg: &ConnConfig) -> Result<Sqlite, String> {
+    use rusqlite::OpenFlags;
+    let mut flags = OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    if cfg.read_only {
+        flags |= OpenFlags::SQLITE_OPEN_READ_ONLY;
+    } else {
+        flags |= OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
+    }
+    if cfg.path.trim().is_empty() {
+        return Err("Choose a database file first.".into());
+    }
+    let c = rusqlite::Connection::open_with_flags(&cfg.path, flags).map_err(|e| e.to_string())?;
+    // Loading native extensions stays off (MECHANICS: allowRuntimeExtensions = false).
+    let _ = c.execute_batch("PRAGMA foreign_keys = ON;");
+    Ok(Sqlite { c, path: cfg.path.clone() })
+}
+
+impl Backend for Sqlite {
+    fn server(&mut self) -> String {
+        format!("SQLite {}", rusqlite::version())
+    }
+    fn databases(&mut self) -> Vec<String> {
+        vec!["main".into()]
+    }
+    fn current_db(&mut self) -> String {
+        std::path::Path::new(&self.path)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "main".into())
+    }
+    fn tables(&mut self) -> Result<Vec<TableInfo>, String> {
+        let mut st = self
+            .c
+            .prepare("SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY type DESC, name")
+            .map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map([], |r| {
+                Ok(TableInfo {
+                    schema: None,
+                    name: r.get::<_, String>(0)?,
+                    is_view: r.get::<_, String>(1)? == "view",
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+    fn columns(&mut self, _schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>, String> {
+        let sql = format!("PRAGMA table_info({})", DbKind::Sqlite.quote(table));
+        let mut st = self.c.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = st
+            .query_map([], |r| {
+                Ok(ColumnInfo {
+                    name: r.get(1)?,
+                    data_type: r.get::<_, String>(2).unwrap_or_default(),
+                    nullable: r.get::<_, i64>(3).unwrap_or(0) == 0,
+                    pk: r.get::<_, i64>(5).unwrap_or(0) > 0,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+    fn foreign_keys(&mut self, tables: &[TableInfo]) -> Vec<ForeignKey> {
+        let mut out = Vec::new();
+        for t in tables.iter().filter(|t| !t.is_view) {
+            let sql = format!("PRAGMA foreign_key_list({})", DbKind::Sqlite.quote(&t.name));
+            if let Ok(mut st) = self.c.prepare(&sql) {
+                if let Ok(rows) = st.query_map([], |r| {
+                    Ok(ForeignKey {
+                        from_table: t.name.clone(),
+                        to_table: r.get(2)?,
+                        from_col: r.get(3)?,
+                        to_col: r.get::<_, Option<String>>(4)?.unwrap_or_else(|| "id".into()),
+                    })
+                }) {
+                    out.extend(rows.filter_map(|r| r.ok()));
+                }
+            }
+        }
+        out
+    }
+    fn run(&mut self, sql: &str, max_rows: usize) -> Result<Vec<QueryResult>, String> {
+        use rusqlite::types::ValueRef;
+        let mut out = Vec::new();
+        for stmt_sql in split_statements(sql) {
+            let t0 = Instant::now();
+            let mut st = self.c.prepare(&stmt_sql).map_err(|e| e.to_string())?;
+            let columns: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
+            let mut res = QueryResult { sql: stmt_sql.clone(), columns: columns.clone(), ..Default::default() };
+            if columns.is_empty() {
+                let n = st.raw_execute().map_err(|e| e.to_string())?;
+                res.affected = Some(n as u64);
+            } else {
+                let mut rows = st.query([]).map_err(|e| e.to_string())?;
+                while let Some(r) = rows.next().map_err(|e| e.to_string())? {
+                    if res.rows.len() >= max_rows {
+                        res.truncated = true;
+                        break;
+                    }
+                    let mut v = Vec::with_capacity(columns.len());
+                    for i in 0..columns.len() {
+                        v.push(match r.get_ref(i).map_err(|e| e.to_string())? {
+                            ValueRef::Null => Cell::Null,
+                            ValueRef::Integer(i) => Cell::Int(i),
+                            ValueRef::Real(f) => Cell::Float(f),
+                            ValueRef::Text(t) => Cell::Text(String::from_utf8_lossy(t).to_string()),
+                            ValueRef::Blob(b) => Cell::Bytes(b.to_vec()),
+                        });
+                    }
+                    res.rows.push(v);
+                }
+            }
+            res.elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            out.push(res);
+        }
+        Ok(out)
+    }
+}
+
+// ---------------------------------------------------------------- PostgreSQL
+
+struct Pg {
+    c: postgres::Client,
+    read_only: bool,
+    /// The person opened a transaction (BEGIN) that is still going.
+    in_tx: bool,
+}
+
+/// User to log in with: the typed one, else the operating-system user
+/// (same rule as the original's `configurePool`: `user || osUser`).
+pub fn effective_user(cfg: &ConnConfig) -> String {
+    if !cfg.user.trim().is_empty() {
+        return cfg.user.trim().to_string();
+    }
+    os_username()
+}
+
+/// Environment variables checked first, in the original's order
+/// (its `username` module in preload.js).
+pub const USERNAME_ENV_ORDER: [&str; 6] = ["SUDO_USER", "C9_USER", "LOGNAME", "USER", "LNAME", "USERNAME"];
+
+/// The operating-system user name, found the way the original finds it:
+/// 1. the first non-empty of SUDO_USER, C9_USER, LOGNAME, USER, LNAME, USERNAME;
+/// 2. the passwd entry of the current user — the original calls Node's
+///    `os.userInfo()`, i.e. `getUserInfo` at 0x2dd9530 → `uv_os_get_passwd`
+///    → `getpwuid_r(geteuid())`;
+/// 3. `id -un <uid>`;
+/// 4. `no-username-<uid>`.
+pub fn os_username() -> String {
+    for k in USERNAME_ENV_ORDER {
+        if let Ok(v) = std::env::var(k) {
+            if !v.is_empty() {
+                return v;
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        if let Some(u) = passwd_username() {
+            return u;
+        }
+        let uid = std::process::Command::new("id").arg("-u").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        if !uid.is_empty() {
+            if let Ok(o) = std::process::Command::new("id").args(["-un", &uid]).output() {
+                let n = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if o.status.success() && !n.is_empty() {
+                    return n;
+                }
+            }
+            return format!("no-username-{uid}");
+        }
+    }
+    String::new()
+}
+
+#[cfg(unix)]
+fn passwd_username() -> Option<String> {
+    // getpwuid_r with a growing buffer, like libuv's uv_os_get_passwd
+    unsafe {
+        let uid = libc::geteuid();
+        let mut buf: Vec<libc::c_char> = vec![0; 1024];
+        loop {
+            let mut pwd: libc::passwd = std::mem::zeroed();
+            let mut result: *mut libc::passwd = std::ptr::null_mut();
+            let r = libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut result);
+            if r == libc::ERANGE && buf.len() < 1 << 20 {
+                buf.resize(buf.len() * 2, 0);
+                continue;
+            }
+            if r != 0 || result.is_null() || pwd.pw_name.is_null() {
+                return None;
+            }
+            let name = std::ffi::CStr::from_ptr(pwd.pw_name).to_string_lossy().to_string();
+            return if name.is_empty() { None } else { Some(name) };
+        }
+    }
+}
+
+/// Full, readable text for a PostgreSQL error. The driver's own text is
+/// just "db error"; the real reason (code, message, detail, hint) and any
+/// network cause are inside it.
+pub fn pg_error_text(e: &postgres::Error) -> String {
+    if let Some(d) = e.as_db_error() {
+        let mut s = format!("{} {}: {}", d.severity(), d.code().code(), d.message());
+        if let Some(x) = d.detail() {
+            s.push_str(&format!("\nDetail: {x}"));
+        }
+        if let Some(x) = d.hint() {
+            s.push_str(&format!("\nHint: {x}"));
+        }
+        return s;
+    }
+    let mut s = e.to_string();
+    let mut src = std::error::Error::source(e);
+    while let Some(x) = src {
+        let t = x.to_string();
+        if !s.contains(&t) {
+            s.push_str(&format!(": {t}"));
+        }
+        src = x.source();
+    }
+    s
+}
+
+/// A plain-language next step for common connection failures.
+pub fn pg_advice(e: &postgres::Error, cfg: &ConnConfig, user: &str) -> Option<String> {
+    let port = cfg.port;
+    if let Some(d) = e.as_db_error() {
+        let msg = d.message().to_lowercase();
+        return Some(match d.code().code() {
+            "28P01" => format!("The server rejected the password for user “{user}”. If the password is saved, open Edit connection and type it again."),
+            "28000" if msg.contains("encryption") || msg.contains("ssl") => "The server only accepts encrypted connections: turn on “Use TLS/SSL” in the connection (BaseLens also tries this automatically).".into(),
+            "28000" => format!("The server does not allow user “{user}” from this computer to this database (pg_hba.conf). Check the user and database, or ask the server's admin."),
+            "3D000" => {
+                if cfg.database.trim().is_empty() {
+                    format!("No database was chosen, so PostgreSQL tried one named after the user (“{user}”), which doesn't exist. Type a database name, e.g. “postgres”.")
+                } else {
+                    format!("The database “{}” doesn't exist on this server. Check the name (it is case-sensitive).", cfg.database)
+                }
+            }
+            "53300" => "The server has too many open connections right now. Close some, or try again later.".into(),
+            "57P03" => "The server is starting up or shutting down. Try again in a moment.".into(),
+            _ => return None,
+        });
+    }
+    let t = pg_error_text(e).to_lowercase();
+    if t.contains("refused") {
+        Some(format!("Nothing answered at {}:{port}. Check that the server is running and the port is right (PostgreSQL usually uses 5432; yours says {port}).", cfg.host))
+    } else if t.contains("timed out") || t.contains("timeout") {
+        Some(format!("No reply from {}:{port} within {} seconds. Check the host, the port and any firewall/VPN.", cfg.host, PG_CONNECT_TIMEOUT_MS / 1000))
+    } else if t.contains("failed to lookup") || t.contains("name or service not known") || t.contains("resolve") {
+        Some(format!("The host name “{}” could not be found. Check it for typos.", cfg.host))
+    } else if t.contains("certificate") {
+        Some("The server's TLS certificate couldn't be verified (self-signed or for another name). If you trust this server, untick “Verify certificate” in the connection — that is what the original app does when no certificate files are given.".into())
+    } else if t.contains("server does not support tls") || t.contains("tls") && cfg.ssl {
+        Some("The server doesn't accept TLS/SSL. Turn off “Use TLS/SSL” in the connection.".into())
+    } else {
+        None
+    }
+}
+
+fn pg_connect(cfg: &ConnConfig, password: &str, user: &str, tls: bool) -> Result<postgres::Client, postgres::Error> {
+    let mut pc = postgres::Config::new();
+    pc.host(&cfg.host)
+        .port(cfg.port)
+        .user(user)
+        .connect_timeout(Duration::from_millis(PG_CONNECT_TIMEOUT_MS))
+        .application_name("baselens");
+    if !password.is_empty() {
+        pc.password(password);
+    }
+    if !cfg.database.is_empty() {
+        pc.dbname(&cfg.database);
+    }
+    if tls {
+        pc.ssl_mode(postgres::config::SslMode::Require);
+        // like the original: without CA/cert files the certificate isn't
+        // checked unless the user asks for verification
+        let connector = native_tls::TlsConnector::builder()
+            .danger_accept_invalid_certs(!(cfg.ssl && cfg.ssl_verify))
+            .danger_accept_invalid_hostnames(!(cfg.ssl && cfg.ssl_verify))
+            .build();
+        match connector {
+            Ok(c) => pc.connect(postgres_native_tls::MakeTlsConnector::new(c)),
+            Err(_) => pc.connect(postgres::NoTls),
+        }
+    } else {
+        pc.connect(postgres::NoTls)
+    }
+}
+
+fn open_pg(cfg: &ConnConfig, password: &str) -> Result<Pg, String> {
+    let user = effective_user(cfg);
+    let first = pg_connect(cfg, password, &user, cfg.ssl);
+    let mut c = match first {
+        Ok(c) => c,
+        Err(e) => {
+            // the server demands encryption: try once more with TLS
+            let needs_tls = !cfg.ssl
+                && e.as_db_error().map(|d| d.code().code() == "28000" && {
+                    let m = d.message().to_lowercase();
+                    m.contains("encryption") || m.contains("ssl")
+                }).unwrap_or(false);
+            let retried = if needs_tls { pg_connect(cfg, password, &user, true).ok() } else { None };
+            match retried {
+                Some(c) => c,
+                None => {
+                    let mut msg = pg_error_text(&e);
+                    if let Some(a) = pg_advice(&e, cfg, &user) {
+                        msg = format!("{a}\n\n{msg}");
+                    }
+                    let db = if cfg.database.is_empty() { format!("(none → “{user}”)") } else { cfg.database.clone() };
+                    msg.push_str(&format!(
+                        "\n\nTried: {user}@{}:{} · database {db} · TLS {} · password {}",
+                        cfg.host,
+                        cfg.port,
+                        if cfg.ssl { "on" } else { "off" },
+                        &if password.is_empty() { "empty".to_string() } else { format!("given ({} characters)", password.chars().count()) }
+                    ));
+                    return Err(msg);
+                }
+            }
+        }
+    };
+    if cfg.read_only {
+        let _ = c.batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY");
+    }
+    Ok(Pg { c, read_only: cfg.read_only, in_tx: false })
+}
+
+
+// ------------------------------------------------------------ diagnostics
+
+/// One line of a connection check: ok?, text.
+pub type DiagLine = (bool, String);
+
+fn pg_read_message(s: &mut std::net::TcpStream) -> std::io::Result<(u8, Vec<u8>)> {
+    use std::io::Read;
+    let mut head = [0u8; 5];
+    s.read_exact(&mut head)?;
+    let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
+    let mut body = vec![0u8; len.saturating_sub(4).min(1 << 16)];
+    s.read_exact(&mut body)?;
+    Ok((head[0], body))
+}
+
+fn pg_error_fields(body: &[u8]) -> String {
+    // fields: type byte + C string, ended by 0
+    let mut out = Vec::new();
+    for f in body.split(|b| *b == 0) {
+        if f.len() > 1 && matches!(f[0], b'S' | b'C' | b'M') {
+            out.push(String::from_utf8_lossy(&f[1..]).to_string());
+        }
+    }
+    out.join(" ")
+}
+
+/// Step-by-step check of a PostgreSQL connection. Nothing secret is sent
+/// until the last step (the real login).
+pub fn pg_diagnose(cfg: &ConnConfig, password: &str) -> Vec<DiagLine> {
+    use std::io::Write;
+    use std::net::{TcpStream, ToSocketAddrs};
+    let mut out: Vec<DiagLine> = Vec::new();
+    let user = effective_user(cfg);
+    let db = if cfg.database.trim().is_empty() { user.clone() } else { cfg.database.trim().to_string() };
+    // 1. where does the host name point?
+    let addrs: Vec<std::net::SocketAddr> = match (cfg.host.as_str(), cfg.port).to_socket_addrs() {
+        Ok(a) => a.collect(),
+        Err(e) => {
+            out.push((false, format!("Host “{}” could not be resolved: {e}", cfg.host)));
+            return out;
+        }
+    };
+    out.push((true, format!("“{}” points to {}", cfg.host, addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", "))));
+    // 2. who answers on each address?
+    let timeout = Duration::from_secs(4);
+    for a in &addrs {
+        match TcpStream::connect_timeout(a, timeout) {
+            Err(e) => out.push((false, format!("{a}: no answer ({e})"))),
+            Ok(mut s) => {
+                let _ = s.set_read_timeout(Some(timeout));
+                // SSLRequest: length 8, code 80877103
+                let mut req = Vec::new();
+                req.extend_from_slice(&8u32.to_be_bytes());
+                req.extend_from_slice(&80877103u32.to_be_bytes());
+                let ssl = if s.write_all(&req).is_ok() {
+                    let mut b = [0u8; 1];
+                    match std::io::Read::read_exact(&mut s, &mut b) {
+                        Ok(_) if b[0] == b'S' => "supports TLS".to_string(),
+                        Ok(_) if b[0] == b'N' => "no TLS".to_string(),
+                        Ok(_) => format!("answered {:?} (not PostgreSQL?)", b[0] as char),
+                        Err(e) => format!("closed the connection ({e})"),
+                    }
+                } else {
+                    "write failed".into()
+                };
+                out.push((true, format!("{a}: a PostgreSQL server answers ({ssl})")));
+            }
+        }
+    }
+    // 3. which login does it ask for? (start-up message, no password sent)
+    if let Some(a) = addrs.iter().find(|a| TcpStream::connect_timeout(a, timeout).is_ok()) {
+        if let Ok(mut s) = TcpStream::connect_timeout(a, timeout) {
+            let _ = s.set_read_timeout(Some(timeout));
+            let mut params = Vec::new();
+            for (k, v) in [("user", user.as_str()), ("database", db.as_str()), ("application_name", "baselens-diagnose")] {
+                params.extend_from_slice(k.as_bytes());
+                params.push(0);
+                params.extend_from_slice(v.as_bytes());
+                params.push(0);
+            }
+            params.push(0);
+            let mut msg = Vec::new();
+            msg.extend_from_slice(&((params.len() + 8) as u32).to_be_bytes());
+            msg.extend_from_slice(&196608u32.to_be_bytes()); // protocol 3.0
+            msg.extend_from_slice(&params);
+            let line = match s.write_all(&msg).and_then(|_| pg_read_message(&mut s)) {
+                Ok((b'R', body)) if body.len() >= 4 => {
+                    let code = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
+                    match code {
+                        0 => (true, format!("{a} lets “{user}” in without a password (trust)")),
+                        3 => (true, format!("{a} asks “{user}” for a plain-text password")),
+                        5 => (true, format!("{a} asks “{user}” for an MD5 password")),
+                        10 => {
+                            let mechs: Vec<String> = body[4..].split(|b| *b == 0).filter(|m| !m.is_empty()).map(|m| String::from_utf8_lossy(m).to_string()).collect();
+                            (true, format!("{a} asks “{user}” for a SCRAM password ({})", mechs.join(", ")))
+                        }
+                        c => (true, format!("{a} asks for login method #{c}")),
+                    }
+                }
+                Ok((b'E', body)) => (false, format!("{a} refused before the password: {}", pg_error_fields(&body))),
+                Ok((t, _)) => (false, format!("{a} sent an unexpected reply ({})", t as char)),
+                Err(e) => (false, format!("{a}: start-up failed ({e})")),
+            };
+            out.push(line);
+        }
+    }
+    // 4. the password itself (never shown)
+    let n = password.chars().count();
+    let mut notes = Vec::new();
+    if password.is_empty() {
+        notes.push("is EMPTY".to_string());
+    } else {
+        notes.push(format!("has {n} characters"));
+    }
+    if password != password.trim() {
+        notes.push("starts or ends with a space".into());
+    }
+    if let Some(t) = password_host_tail(password) {
+        notes.push(format!("ends with “{t}”, which looks like part of an address pasted with it"));
+    }
+    let dead: Vec<char> = password.chars().filter(|c| "'\"`´~^¨".contains(*c)).collect();
+    if !dead.is_empty() {
+        notes.push(format!("contains {} accent/quote character(s) — on ABNT2 keyboards these are typed with dead keys, use the 👁 button to check them", dead.len()));
+    }
+    if password.chars().any(|c| !c.is_ascii()) {
+        notes.push("contains non-ASCII letters".into());
+    }
+    out.push((!password.is_empty() && password == password.trim() && password_host_tail(password).is_none(), format!("The password {}", notes.join(", "))));
+    // 5. the real login
+    match open_pg(cfg, password) {
+        Ok(mut c) => out.push((true, format!("Login OK: {}", c.server()))),
+        Err(e) => out.push((false, format!("Login failed: {}", e.lines().find(|l| l.contains("FATAL") || l.contains("ERROR")).unwrap_or(e.lines().next().unwrap_or(""))))),
+    }
+    out
+}
+
+/// What a statement does to an open transaction: Some(true) opens one,
+/// Some(false) ends it.
+fn tx_effect(stmt: &str) -> Option<bool> {
+    let s = strip_comments(stmt).to_ascii_uppercase();
+    let mut w = s.split_whitespace();
+    match (w.next(), w.next()) {
+        (Some("BEGIN") | Some("START"), _) => Some(true),
+        (Some("COMMIT") | Some("END") | Some("ABORT"), _) => Some(false),
+        (Some("ROLLBACK"), Some("TO")) => None,
+        (Some("ROLLBACK"), _) => Some(false),
+        (Some("PREPARE"), Some("TRANSACTION")) => Some(false),
+        _ => None,
+    }
+}
+
+/// A single read statement that a cursor can page through.
+pub fn cursor_friendly(stmt: &str) -> bool {
+    let s = strip_comments(stmt);
+    let first = s.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
+    matches!(first.as_str(), "SELECT" | "WITH" | "VALUES" | "TABLE") && is_read_query(stmt) && split_statements(stmt).len() == 1
+}
+
+impl Pg {
+    /// Reads a SELECT through a cursor, PG_FETCH_BATCH rows at first, and
+    /// stops at max_rows instead of downloading the whole result.
+    fn run_batched(&mut self, stmt: &str, max_rows: usize) -> Result<Vec<QueryResult>, String> {
+        use postgres::SimpleQueryMessage as M;
+        let t0 = Instant::now();
+        let own_tx = !self.in_tx;
+        const CUR: &str = "baselens_cursor";
+        let declare = format!("{}DECLARE {CUR} NO SCROLL CURSOR FOR {stmt}", if own_tx { "BEGIN; " } else { "" });
+        if let Err(e) = self.c.batch_execute(&declare) {
+            if own_tx {
+                let _ = self.c.batch_execute("ROLLBACK");
+            }
+            return Err(pg_error_text(&e));
+        }
+        let mut res = QueryResult { sql: stmt.to_string(), ..Default::default() };
+        let mut batch = PG_FETCH_BATCH;
+        let outcome: Result<(), String> = loop {
+            let left = max_rows.saturating_sub(res.rows.len());
+            // at the limit: ask for one more row only to know if there is more
+            let want = if left == 0 { 1 } else { batch.min(left) };
+            let msgs = match self.c.simple_query(&format!("FETCH {want} FROM {CUR}")) {
+                Ok(m) => m,
+                Err(e) => break Err(pg_error_text(&e)),
+            };
+            res.batches += 1;
+            let mut got = 0;
+            for m in msgs {
+                match m {
+                    M::RowDescription(cols) if res.columns.is_empty() => {
+                        res.columns = cols.iter().map(|c| c.name().to_string()).collect();
+                    }
+                    M::Row(row) => {
+                        got += 1;
+                        if res.columns.is_empty() {
+                            res.columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+                        }
+                        if left == 0 {
+                            res.truncated = true;
+                            continue;
+                        }
+                        res.rows.push((0..row.len()).map(|i| row.get(i).map(|s| Cell::Text(s.to_string())).unwrap_or(Cell::Null)).collect());
+                    }
+                    _ => {}
+                }
+            }
+            if left == 0 || got < want {
+                break Ok(());
+            }
+            batch = (batch * 2).min(PG_FETCH_MAX);
+        };
+        let end = if own_tx { format!("CLOSE {CUR}; COMMIT") } else { format!("CLOSE {CUR}") };
+        if self.c.batch_execute(&end).is_err() && own_tx {
+            let _ = self.c.batch_execute("ROLLBACK");
+        }
+        outcome?;
+        res.elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        Ok(vec![res])
+    }
+
+    fn text_rows(&mut self, sql: &str) -> Result<Vec<Vec<Option<String>>>, String> {
+        let msgs = self.c.simple_query(sql).map_err(|e| pg_error_text(&e))?;
+        let mut out = Vec::new();
+        for m in msgs {
+            if let postgres::SimpleQueryMessage::Row(r) = m {
+                out.push((0..r.len()).map(|i| r.get(i).map(|s| s.to_string())).collect());
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl Backend for Pg {
+    fn server(&mut self) -> String {
+        self.text_rows("SHOW server_version")
+            .ok()
+            .and_then(|r| r.first().and_then(|x| x[0].clone()))
+            .map(|v| format!("PostgreSQL {v}"))
+            .unwrap_or_else(|| "PostgreSQL".into())
+            + if self.read_only { " (read-only)" } else { "" }
+    }
+    fn databases(&mut self) -> Vec<String> {
+        self.text_rows("SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname")
+            .map(|r| r.into_iter().filter_map(|x| x[0].clone()).collect())
+            .unwrap_or_default()
+    }
+    fn current_db(&mut self) -> String {
+        self.text_rows("SELECT current_database()")
+            .ok()
+            .and_then(|r| r.first().and_then(|x| x[0].clone()))
+            .unwrap_or_default()
+    }
+    fn tables(&mut self) -> Result<Vec<TableInfo>, String> {
+        let rows = self.text_rows(
+            "SELECT table_schema, table_name, table_type FROM information_schema.tables \
+             WHERE table_schema NOT IN ('pg_catalog','information_schema','pg_toast') \
+             ORDER BY table_schema = 'public' DESC, table_schema, table_name",
+        )?;
+        Ok(rows
+            .into_iter()
+            .map(|r| TableInfo {
+                schema: r[0].clone(),
+                name: r[1].clone().unwrap_or_default(),
+                is_view: r[2].as_deref() == Some("VIEW"),
+            })
+            .collect())
+    }
+    fn columns(&mut self, schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>, String> {
+        let schema = schema.unwrap_or("public");
+        let sql = format!(
+            "SELECT c.column_name, c.data_type, c.is_nullable, \
+             EXISTS (SELECT 1 FROM information_schema.table_constraints tc \
+               JOIN information_schema.key_column_usage k ON k.constraint_name = tc.constraint_name AND k.table_schema = tc.table_schema \
+               WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = c.table_schema AND tc.table_name = c.table_name AND k.column_name = c.column_name) \
+             FROM information_schema.columns c WHERE c.table_schema = {} AND c.table_name = {} ORDER BY c.ordinal_position",
+            sql_string(schema),
+            sql_string(table)
+        );
+        Ok(self
+            .text_rows(&sql)?
+            .into_iter()
+            .map(|r| ColumnInfo {
+                name: r[0].clone().unwrap_or_default(),
+                data_type: r[1].clone().unwrap_or_default(),
+                nullable: r[2].as_deref() == Some("YES"),
+                pk: r[3].as_deref() == Some("t"),
+            })
+            .collect())
+    }
+    fn foreign_keys(&mut self, _tables: &[TableInfo]) -> Vec<ForeignKey> {
+        self.text_rows(
+            "SELECT kcu.table_name, kcu.column_name, ccu.table_name, ccu.column_name \
+             FROM information_schema.table_constraints tc \
+             JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema \
+             JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema \
+             WHERE tc.constraint_type = 'FOREIGN KEY'",
+        )
+        .map(|rows| {
+            rows.into_iter()
+                .map(|r| ForeignKey {
+                    from_table: r[0].clone().unwrap_or_default(),
+                    from_col: r[1].clone().unwrap_or_default(),
+                    to_table: r[2].clone().unwrap_or_default(),
+                    to_col: r[3].clone().unwrap_or_default(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+    fn all_columns(&mut self) -> Result<Vec<(String, Vec<ColumnInfo>)>, String> {
+        // one query on pg_catalog instead of one information_schema query per table
+        let rows = self.text_rows(
+            "SELECT n.nspname, c.relname, a.attname, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull, \
+               COALESCE(a.attnum = ANY(i.indkey), false) \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             LEFT JOIN pg_catalog.pg_index i ON i.indrelid = c.oid AND i.indisprimary \
+             WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r','v','m','p','f') \
+               AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg\\_toast%' \
+               AND n.nspname NOT LIKE 'pg\\_temp%' \
+             ORDER BY n.nspname, c.relname, a.attnum",
+        )?;
+        let mut out: Vec<(String, Vec<ColumnInfo>)> = Vec::new();
+        for r in rows {
+            let key = format!("{}.{}", r[0].clone().unwrap_or_default(), r[1].clone().unwrap_or_default());
+            let col = ColumnInfo {
+                name: r[2].clone().unwrap_or_default(),
+                data_type: r[3].clone().unwrap_or_default(),
+                nullable: r[4].as_deref() == Some("t"),
+                pk: r[5].as_deref() == Some("t"),
+            };
+            match out.last_mut() {
+                Some((k, v)) if *k == key => v.push(col),
+                _ => out.push((key, vec![col])),
+            }
+        }
+        Ok(out)
+    }
+    fn run(&mut self, sql: &str, max_rows: usize) -> Result<Vec<QueryResult>, String> {
+        use postgres::SimpleQueryMessage as M;
+        let t0 = Instant::now();
+        let stmts = split_statements(sql);
+        if stmts.len() == 1 && cursor_friendly(&stmts[0]) {
+            return self.run_batched(&stmts[0], max_rows);
+        }
+        for st in &stmts {
+            if let Some(open) = tx_effect(st) {
+                self.in_tx = open;
+            }
+        }
+        let msgs = self.c.simple_query(sql).map_err(|e| pg_error_text(&e))?;
+        let mut out = Vec::new();
+        let mut cur: Option<QueryResult> = None;
+        for m in msgs {
+            match m {
+                M::RowDescription(cols) => {
+                    let mut r = QueryResult::default();
+                    r.columns = cols.iter().map(|c| c.name().to_string()).collect();
+                    cur = Some(r);
+                }
+                M::Row(row) => {
+                    let r = cur.get_or_insert_with(|| QueryResult {
+                        columns: row.columns().iter().map(|c| c.name().to_string()).collect(),
+                        ..Default::default()
+                    });
+                    if r.rows.len() >= max_rows {
+                        r.truncated = true;
+                        continue;
+                    }
+                    r.rows.push(
+                        (0..row.len())
+                            .map(|i| match row.get(i) {
+                                None => Cell::Null,
+                                Some(s) => Cell::Text(s.to_string()),
+                            })
+                            .collect(),
+                    );
+                }
+                M::CommandComplete(n) => {
+                    let mut r = cur.take().unwrap_or_default();
+                    if r.columns.is_empty() {
+                        r.affected = Some(n);
+                    }
+                    r.sql = stmts.get(out.len()).cloned().unwrap_or_default();
+                    out.push(r);
+                }
+                _ => {}
+            }
+        }
+        if let Some(mut r) = cur.take() {
+            r.sql = stmts.get(out.len()).cloned().unwrap_or_default();
+            out.push(r);
+        }
+        let el = t0.elapsed().as_secs_f64() * 1000.0;
+        for r in &mut out {
+            r.elapsed_ms = el;
+        }
+        Ok(out)
+    }
+}
+
+// ---------------------------------------------------------------- MySQL
+
+struct My {
+    c: mysql::Conn,
+    read_only: bool,
+}
+
+fn open_mysql(cfg: &ConnConfig, password: &str) -> Result<My, String> {
+    use mysql::prelude::Queryable;
+    let mut b = mysql::OptsBuilder::new()
+        .ip_or_hostname(Some(cfg.host.clone()))
+        .tcp_port(cfg.port)
+        .user(Some(cfg.user.clone()))
+        .tcp_connect_timeout(Some(Duration::from_millis(MYSQL_CONNECT_TIMEOUT_MS)));
+    if !password.is_empty() {
+        b = b.pass(Some(password.to_string()));
+    }
+    if !cfg.database.is_empty() {
+        b = b.db_name(Some(cfg.database.clone()));
+    }
+    if cfg.ssl {
+        b = b.ssl_opts(Some(
+            mysql::SslOpts::default()
+                .with_danger_accept_invalid_certs(!cfg.ssl_verify)
+                .with_danger_skip_domain_validation(!cfg.ssl_verify),
+        ));
+    }
+    let mut c = mysql::Conn::new(b).map_err(|e| e.to_string())?;
+    if cfg.read_only {
+        let _ = c.query_drop("SET SESSION TRANSACTION READ ONLY");
+    }
+    Ok(My { c, read_only: cfg.read_only })
+}
+
+fn my_cell(v: mysql::Value) -> Cell {
+    use mysql::Value as V;
+    match v {
+        V::NULL => Cell::Null,
+        V::Int(i) => Cell::Int(i),
+        V::UInt(u) => Cell::Int(u as i64),
+        V::Float(f) => Cell::Float(f as f64),
+        V::Double(f) => Cell::Float(f),
+        V::Bytes(b) => match String::from_utf8(b) {
+            Ok(s) => Cell::Text(s),
+            Err(e) => Cell::Bytes(e.into_bytes()),
+        },
+        V::Date(y, m, d, h, mi, s, us) => {
+            if h == 0 && mi == 0 && s == 0 && us == 0 {
+                Cell::Text(format!("{y:04}-{m:02}-{d:02}"))
+            } else {
+                Cell::Text(format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}"))
+            }
+        }
+        V::Time(neg, d, h, m, s, _) => Cell::Text(format!(
+            "{}{:02}:{m:02}:{s:02}",
+            if neg { "-" } else { "" },
+            d * 24 + h as u32
+        )),
+    }
+}
+
+impl My {
+    fn strings(&mut self, sql: &str) -> Vec<Vec<String>> {
+        self.run(sql, 100_000)
+            .ok()
+            .and_then(|mut v| if v.is_empty() { None } else { Some(v.remove(0)) })
+            .map(|r| r.rows.into_iter().map(|row| row.iter().map(|c| c.display()).collect()).collect())
+            .unwrap_or_default()
+    }
+}
+
+impl Backend for My {
+    fn server(&mut self) -> String {
+        let v = self.strings("SELECT VERSION()");
+        let ver = v.first().and_then(|r| r.first()).cloned().unwrap_or_default();
+        let name = if ver.to_lowercase().contains("mariadb") { "MariaDB" } else { "MySQL" };
+        format!("{name} {ver}{}", if self.read_only { " (read-only)" } else { "" })
+    }
+    fn databases(&mut self) -> Vec<String> {
+        self.strings("SHOW DATABASES").into_iter().filter_map(|r| r.into_iter().next()).collect()
+    }
+    fn current_db(&mut self) -> String {
+        self.strings("SELECT DATABASE()")
+            .first()
+            .and_then(|r| r.first())
+            .cloned()
+            .filter(|s| s != "(NULL)")
+            .unwrap_or_default()
+    }
+    fn tables(&mut self) -> Result<Vec<TableInfo>, String> {
+        Ok(self
+            .strings("SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name")
+            .into_iter()
+            .map(|r| TableInfo { schema: None, name: r[0].clone(), is_view: r[1].contains("VIEW") })
+            .collect())
+    }
+    fn columns(&mut self, _schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>, String> {
+        let sql = format!(
+            "SELECT column_name, column_type, is_nullable, column_key FROM information_schema.columns \
+             WHERE table_schema = DATABASE() AND table_name = {} ORDER BY ordinal_position",
+            sql_string(table)
+        );
+        Ok(self
+            .strings(&sql)
+            .into_iter()
+            .map(|r| ColumnInfo {
+                name: r[0].clone(),
+                data_type: r[1].clone(),
+                nullable: r[2] == "YES",
+                pk: r[3] == "PRI",
+            })
+            .collect())
+    }
+    fn all_columns(&mut self) -> Result<Vec<(String, Vec<ColumnInfo>)>, String> {
+        let rows = self.strings(
+            "SELECT table_name, column_name, column_type, is_nullable, column_key FROM information_schema.columns \
+             WHERE table_schema = DATABASE() ORDER BY table_name, ordinal_position",
+        );
+        let mut out: Vec<(String, Vec<ColumnInfo>)> = Vec::new();
+        for r in rows {
+            let col = ColumnInfo { name: r[1].clone(), data_type: r[2].clone(), nullable: r[3] == "YES", pk: r[4] == "PRI" };
+            match out.last_mut() {
+                Some((k, v)) if *k == r[0] => v.push(col),
+                _ => out.push((r[0].clone(), vec![col])),
+            }
+        }
+        Ok(out)
+    }
+    fn foreign_keys(&mut self, _tables: &[TableInfo]) -> Vec<ForeignKey> {
+        self.strings(
+            "SELECT table_name, column_name, referenced_table_name, referenced_column_name FROM information_schema.key_column_usage \
+             WHERE table_schema = DATABASE() AND referenced_table_name IS NOT NULL",
+        )
+        .into_iter()
+        .map(|r| ForeignKey { from_table: r[0].clone(), from_col: r[1].clone(), to_table: r[2].clone(), to_col: r[3].clone() })
+        .collect()
+    }
+    fn run(&mut self, sql: &str, max_rows: usize) -> Result<Vec<QueryResult>, String> {
+        use mysql::prelude::Queryable;
+        let mut out = Vec::new();
+        for stmt in split_statements(sql) {
+            let t0 = Instant::now();
+            let mut qr = self.c.query_iter(&stmt).map_err(|e| e.to_string())?;
+            while let Some(mut set) = qr.iter() {
+                let columns: Vec<String> = set.columns().as_ref().iter().map(|c| c.name_str().to_string()).collect();
+                let mut res = QueryResult { sql: stmt.clone(), columns, ..Default::default() };
+                for row in set.by_ref() {
+                    let row = row.map_err(|e| e.to_string())?;
+                    if res.rows.len() >= max_rows {
+                        res.truncated = true;
+                        continue;
+                    }
+                    res.rows.push(row.unwrap().into_iter().map(my_cell).collect());
+                }
+                if res.columns.is_empty() {
+                    res.affected = Some(set.affected_rows());
+                }
+                res.elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                out.push(res);
+            }
+        }
+        Ok(out)
+    }
+}
+
+// ------------------------------------------------------------ connection URLs
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// Fills a connection from a URL such as
+/// `postgresql://user:p%40ss@host:5433/db?sslmode=require`.
+/// Like the original (`parseUrl` in main.js): any `sslmode` other than
+/// `disable` turns SSL on. Returns the password separately.
+pub fn parse_connection_url(url: &str) -> Result<(ConnConfig, String), String> {
+    let url = url.trim();
+    let (scheme, rest) = url.split_once("://").ok_or("A URL starts with e.g. postgresql:// or mysql://")?;
+    let kind = match scheme.to_lowercase().as_str() {
+        "postgres" | "postgresql" | "psql" => DbKind::Postgres,
+        "mysql" | "mariadb" => DbKind::Mysql,
+        "sqlite" | "file" => DbKind::Sqlite,
+        other => return Err(format!("“{other}://” isn't supported here (use postgresql://, mysql:// or sqlite://)")),
+    };
+    let mut cfg = ConnConfig { kind, port: kind.default_port(), ..Default::default() };
+    if kind == DbKind::Sqlite {
+        cfg.path = percent_decode(rest.split('?').next().unwrap_or(""));
+        return Ok((cfg, String::new()));
+    }
+    let (main, query) = match rest.split_once('?') {
+        Some((m, q)) => (m, q),
+        None => (rest, ""),
+    };
+    let (authority, path) = match main.split_once('/') {
+        Some((a, p)) => (a, p),
+        None => (main, ""),
+    };
+    // the LAST @ separates the credentials, so passwords may contain @
+    let (cred, hostport) = match authority.rfind('@') {
+        Some(i) => (&authority[..i], &authority[i + 1..]),
+        None => ("", authority),
+    };
+    let mut password = String::new();
+    if !cred.is_empty() {
+        match cred.split_once(':') {
+            Some((u, p)) => {
+                cfg.user = percent_decode(u);
+                password = percent_decode(p);
+            }
+            None => cfg.user = percent_decode(cred),
+        }
+    }
+    // [ipv6]:port or host:port
+    if let Some(stripped) = hostport.strip_prefix('[') {
+        let (h, after) = stripped.split_once(']').ok_or("Unclosed [ in the host")?;
+        cfg.host = h.to_string();
+        if let Some(p) = after.strip_prefix(':') {
+            cfg.port = p.parse().map_err(|_| format!("“{p}” isn't a port number"))?;
+        }
+    } else if let Some((h, p)) = hostport.rsplit_once(':') {
+        cfg.host = h.to_string();
+        cfg.port = p.parse().map_err(|_| format!("“{p}” isn't a port number"))?;
+    } else if !hostport.is_empty() {
+        cfg.host = hostport.to_string();
+    }
+    if cfg.host.is_empty() {
+        cfg.host = "localhost".into();
+    }
+    cfg.database = percent_decode(path.trim_end_matches('/'));
+    for pair in query.split('&').filter(|x| !x.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        match k.to_lowercase().as_str() {
+            "sslmode" | "ssl-mode" => {
+                cfg.ssl = !v.eq_ignore_ascii_case("disable");
+                cfg.ssl_verify = v.eq_ignore_ascii_case("verify-full") || v.eq_ignore_ascii_case("verify-ca");
+            }
+            "ssl" => cfg.ssl = matches!(v, "true" | "1"),
+            "user" if cfg.user.is_empty() => cfg.user = percent_decode(v),
+            "password" if password.is_empty() => password = percent_decode(v),
+            "dbname" if cfg.database.is_empty() => cfg.database = percent_decode(v),
+            _ => {}
+        }
+    }
+    Ok((cfg, password))
+}
+
+/// The end of a password that looks like part of a host was pasted with it
+/// (e.g. "secret@172" copied from "user:secret@172.16.0.4").
+pub fn password_host_tail(pw: &str) -> Option<String> {
+    let i = pw.rfind('@')?;
+    let tail = &pw[i..];
+    let rest = &tail[1..];
+    if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.') && rest.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        Some(tail.to_string())
+    } else {
+        None
+    }
+}
