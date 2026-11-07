@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=BaseLens
+GenericName=Database Editor
+Comment=See into every database. Free, private database editor.
+Exec=baselens %F
+Icon=baselens
+Categories=Development;Database;
+Keywords=sql;database;postgres;mysql;sqlite;json;
+StartupWMClass=baselens
+Terminal=false
