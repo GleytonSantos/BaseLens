@@ -1,0 +1,53 @@
+# Maintainer: Gleyton Santos <gleyton.santos@estantemagica.com.br>
+#
+# Builds BaseLens from this source tree:
+#   cd packaging/arch && makepkg -si
+# (scripts/package-arch.sh does the same and copies the package to dist/)
+
+pkgname=baselens
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='See into every database: a free, private desktop editor for SQLite, PostgreSQL and MySQL'
+arch=('x86_64' 'aarch64')
+license=('MIT')
+depends=('gcc-libs' 'glibc' 'openssl' 'libxkbcommon' 'libglvnd' 'hicolor-icon-theme')
+optdepends=('wayland: Wayland session support'
+            'libx11: X11 session support'
+            'ollama: local AI assistant')
+makedepends=('cargo')
+options=('!lto' '!debug')
+
+# the source tree two levels up (this file lives in packaging/arch/)
+_root() { realpath "$startdir/../.."; }
+
+prepare() {
+    cd "$(_root)"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$(_root)"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo build --release --locked --frozen --target-dir "${CARGO_TARGET_DIR:-$srcdir/target}"
+}
+
+check() {
+    cd "$(_root)"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --release --locked --frozen --target-dir "${CARGO_TARGET_DIR:-$srcdir/target}"
+}
+
+package() {
+    local root target
+    root="$(_root)"
+    target="${CARGO_TARGET_DIR:-$srcdir/target}"
+    install -Dm755 "$target/release/baselens" "$pkgdir/usr/bin/baselens"
+    install -Dm644 "$root/assets/baselens.desktop" "$pkgdir/usr/share/applications/baselens.desktop"
+    install -Dm644 "$root/packaging/linux/dev.baselens.BaseLens.metainfo.xml" "$pkgdir/usr/share/metainfo/dev.baselens.BaseLens.metainfo.xml"
+    install -Dm644 "$root/assets/baselens.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/baselens.svg"
+    for n in 16 24 32 48 64 128 256 512; do
+        install -Dm644 "$root/assets/baselens-$n.png" "$pkgdir/usr/share/icons/hicolor/${n}x${n}/apps/baselens.png"
+    done
+    install -Dm644 "$root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

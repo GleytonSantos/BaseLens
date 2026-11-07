@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.baselens.BaseLens</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>BaseLens</name>
+  <summary>See into every database</summary>
+  <description>
+    <p>BaseLens is a free, private desktop editor for SQLite, PostgreSQL and MySQL.</p>
+    <ul>
+      <li>One navigator for every connection and database</li>
+      <li>Filters without writing SQL, value suggestions in WHERE</li>
+      <li>Smart autocomplete, formatting and a command palette</li>
+      <li>JSON viewer, charts and an ER diagram</li>
+      <li>Optional AI assistant: local (Ollama) or cloud</li>
+      <li>Passwords encrypted on your computer</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">baselens.desktop</launchable>
+  <provides>
+    <binary>baselens</binary>
+  </provides>
+  <categories>
+    <category>Development</category>
+    <category>Database</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-06"/>
+  </releases>
+</component>

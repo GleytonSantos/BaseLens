@@ -1,0 +1,29 @@
+# flatpak-builder manifest that packs the prebuilt Linux tarball from dist/:
+#   scripts/package-linux.sh        (or download the release tarball)
+#   flatpak-builder --user --install build-flatpak packaging/flatpak/dev.baselens.BaseLens.yml
+# scripts/package-flatpak.sh makes the same app without flatpak-builder.
+app-id: dev.baselens.BaseLens
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: baselens
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=home
+  - --talk-name=org.freedesktop.secrets
+modules:
+  - name: baselens
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 baselens /app/bin/baselens
+      - install -Dm644 assets/baselens.desktop /app/share/applications/dev.baselens.BaseLens.desktop
+      - sed -i 's/^Icon=baselens/Icon=dev.baselens.BaseLens/; s/^StartupWMClass=.*/StartupWMClass=dev.baselens.BaseLens/' /app/share/applications/dev.baselens.BaseLens.desktop
+      - install -Dm644 assets/baselens.svg /app/share/icons/hicolor/scalable/apps/dev.baselens.BaseLens.svg
+      - install -Dm644 assets/baselens-256.png /app/share/icons/hicolor/256x256/apps/dev.baselens.BaseLens.png
+    sources:
+      - type: archive
+        path: ../../dist/baselens-0.1.0-linux-x86_64.tar.gz
