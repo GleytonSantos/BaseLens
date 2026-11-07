@@ -1,0 +1,127 @@
+# Builds BaseLens for Linux (deb, rpm, AppImage, tar.gz, Flatpak, Arch),
+# Windows (zip) and macOS (universal .app in .dmg / .zip).
+# Runs on every tag v* (and publishes a GitHub release) or by hand.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+      - run: cargo test --locked
+
+  linux:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (Debian 12)
+        run: docker build -t baselens-build packaging/docker
+      - name: deb, rpm, AppImage, tar.gz
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e CARGO_HOME=/tmp/cargo \
+            -e CARGO_TARGET_DIR=/src/target/docker -v "$PWD:/src" -w /src baselens-build scripts/package-linux.sh
+      - name: Windows (cross-compiled, for comparison with the native build)
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e CARGO_HOME=/tmp/cargo \
+            -e CARGO_TARGET_DIR=/src/target/docker -v "$PWD:/src" -w /src baselens-build scripts/package-windows.sh
+          mv dist/BaseLens-*-windows-x64.zip "dist/$(basename dist/BaseLens-*-windows-x64.zip .zip)-gnu.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  flatpak:
+    needs: linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+          path: dist
+      - run: |
+          sudo apt-get update && sudo apt-get install -y flatpak
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub org.freedesktop.Platform//25.08
+          scripts/package-flatpak.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: dist/*.flatpak
+
+  arch:
+    needs: test
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - run: pacman -Syu --noconfirm --needed base-devel rust git openssl libxkbcommon libglvnd hicolor-icon-theme
+      - uses: actions/checkout@v4
+      - run: |
+          useradd -m builder
+          chown -R builder "$GITHUB_WORKSPACE"
+          su builder -c "cd '$GITHUB_WORKSPACE' && scripts/package-arch.sh --nocheck"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: dist/*.pkg.tar.*
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked
+      - shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          $stage = "BaseLens-$v-windows-x64"
+          New-Item -ItemType Directory -Force -Path $stage, dist | Out-Null
+          Copy-Item target/release/baselens.exe "$stage/BaseLens.exe"
+          Copy-Item LICENSE, README.md $stage
+          Compress-Archive -Path $stage -DestinationPath "dist/$stage.zip" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.zip
+
+  macos:
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - run: scripts/package-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist/*.dmg
+            dist/*.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, flatpak, arch, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
