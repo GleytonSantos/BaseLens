@@ -294,3 +294,9 @@ Read with native_function_pseudocode:
 - The original's own Postgres settings (app.asar) never set `keepAlive`, so its node-postgres sockets have no probes; an idle connection behind a proxy or NAT can be dropped silently and the next query hangs until the OS gives up.
 
 Used in the build (`db.rs`): PostgreSQL and MySQL connections now turn keep-alive on with libuv's probe rule — 1 s between probes, 10 probes — after 60 s idle (`TCP_KEEPALIVE_IDLE_S`, a BaseLens choice, since libuv refuses 0). Checked on a live connection to a local PostgreSQL: `ss -tnoe` shows `timer:(keepalive,59sec,0)`.
+
+## Round 21 — icons and the rest in every package
+
+- **Windows**: `BaseLens.exe` carries the icon (16, 24, 32, 48, 64, 256 px), version info and an application manifest (`packaging/windows/baselens.exe.manifest`: per-monitor DPI v2 for sharp text, Common Controls 6, UTF-8 code page, long paths, runs without admin). New installer `BaseLens-<v>-windows-x64-setup.exe` (NSIS, `packaging/windows/installer.nsi`): per-user install in `%LOCALAPPDATA%\Programs\BaseLens`, Start menu and desktop shortcuts with the icon, an entry in Apps with icon and version, and an uninstaller that keeps the person's settings. Checked under Wine: files, shortcut and Apps entry are created.
+- **Linux**: `.deb`, `.rpm` and Arch now all ship the icon at 16, 24 (deb/rpm/Arch), 32, 48, 64, 128, 256, 512 px plus SVG, the `.desktop` file and AppStream metadata; AppImage has `.DirIcon` and the full icon set; Flatpak uses `dev.baselens.BaseLens` icons. The AppImage is now written beside and renamed into place, so an open copy can't make the build fail.
+- **macOS**: `.icns` built from the same PNGs (unchanged).

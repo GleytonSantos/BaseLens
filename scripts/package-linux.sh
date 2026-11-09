@@ -36,7 +36,9 @@ done
 cp assets/baselens.desktop "$APPDIR/baselens.desktop"
 cp assets/baselens-256.png "$APPDIR/baselens.png"
 install -m755 packaging/linux/AppRun "$APPDIR/AppRun"
-ARCH="$ARCH" appimagetool --no-appstream "$APPDIR" "$DIST/BaseLens-$VERSION-$ARCH.AppImage"
+# built beside and renamed into place, so a copy that is open can't block it
+ARCH="$ARCH" appimagetool --no-appstream "$APPDIR" "$DIST/.BaseLens-$VERSION-$ARCH.AppImage.new"
+mv -f "$DIST/.BaseLens-$VERSION-$ARCH.AppImage.new" "$DIST/BaseLens-$VERSION-$ARCH.AppImage"
 
 echo "==> .tar.gz"
 TGZ="$(mktemp -d)/baselens-$VERSION-linux-$ARCH"

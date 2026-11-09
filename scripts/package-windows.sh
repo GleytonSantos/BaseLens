@@ -12,4 +12,12 @@ mkdir -p "$STAGE"
 cp "$TARGET_DIR/x86_64-pc-windows-gnu/release/baselens.exe" "$STAGE/BaseLens.exe"
 cp LICENSE README.md "$STAGE/"
 (cd "$(dirname "$STAGE")" && zip -qr - "$(basename "$STAGE")") > "dist/BaseLens-$VERSION-windows-x64.zip"
-ls -la dist/*.zip
+
+# installer with Start menu / desktop shortcuts and an uninstaller
+if command -v makensis >/dev/null; then
+    makensis -V2 -DVERSION="$VERSION" -DEXE="$STAGE/BaseLens.exe" \
+        -DOUT="$PWD/dist/BaseLens-$VERSION-windows-x64-setup.exe" packaging/windows/installer.nsi
+else
+    echo "(makensis not found: skipping the installer)"
+fi
+ls -la dist/*windows*

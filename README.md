@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/baselens-128.png" width="96" alt="BaseLens logo"></p>
+
 # BaseLens
 
 **See into every database.** A free, private desktop editor for SQLite, PostgreSQL and MySQL, written in Rust with [egui](https://github.com/emilk/egui).
@@ -28,7 +30,7 @@ Release packages are built by [the release workflow](.github/workflows/release.y
 | Any Linux | `BaseLens-<version>-x86_64.AppImage`, `baselens-<version>-linux-x86_64.tar.gz` |
 | Flatpak | `BaseLens-<version>-x86_64.flatpak` (`flatpak install --user BaseLens-*.flatpak`) |
 | Arch, Manjaro, CachyOS | `baselens-<version>-1-x86_64.pkg.tar.zst` (`sudo pacman -U …`), or `makepkg -si` in `packaging/arch` |
-| Windows 10/11 | `BaseLens-<version>-windows-x64.zip` |
+| Windows 10/11 | `BaseLens-<version>-windows-x64-setup.exe` (installer: Start menu and desktop shortcuts, uninstall from Apps, no admin needed) or `BaseLens-<version>-windows-x64.zip` (portable) |
 | macOS 11+ (Apple Silicon and Intel) | `BaseLens-<version>-macos-universal.dmg` |
 
 The macOS app is not notarised: the first time, right-click it and choose **Open**.
@@ -47,7 +49,7 @@ Linux needs `pkg-config` and the OpenSSL headers (`libssl-dev` / `openssl-devel`
 | --- | --- | --- |
 | `scripts/build-all.sh` | everything below that this computer can make | Linux with Docker |
 | `scripts/package-linux.sh` | `.deb`, `.rpm`, AppImage, `.tar.gz` | inside `packaging/docker` (Debian 12, so it runs on older distros) |
-| `scripts/package-windows.sh` | Windows `.zip` (cross-compiled) | inside `packaging/docker` |
+| `scripts/package-windows.sh` | Windows installer `-setup.exe` (NSIS) and portable `.zip` (cross-compiled) | inside `packaging/docker` |
 | `scripts/package-flatpak.sh` | `.flatpak` bundle | Linux with `flatpak` and `org.freedesktop.Platform//25.08` |
 | `scripts/package-arch.sh` | `.pkg.tar.zst` | Arch-based Linux |
 | `scripts/package-macos.sh` | universal `.app` in `.dmg` and `.zip` | macOS |

@@ -5,7 +5,7 @@ FROM rust:1-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config libssl-dev \
         gcc-mingw-w64-x86-64 \
-        zip file desktop-file-utils \
+        zip file desktop-file-utils nsis \
     && apt-get clean
 
 RUN rustup target add x86_64-pc-windows-gnu \
