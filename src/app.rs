@@ -161,6 +161,8 @@ struct AcState {
     start: usize,
     items: Vec<Suggestion>,
     last_text_len: usize,
+    /// why the popup last closed (shown by the test robot)
+    closed_by: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -420,7 +422,7 @@ impl Cmd {
             Cmd::Shortcuts => "Keyboard shortcuts",
             Cmd::Lock => "Lock the app",
             Cmd::Ask => "Ask Lens: is it in this table?",
-            Cmd::Argon2 => "Argon2: make or check a password hash",
+            Cmd::Argon2 => "Argon2 / scrypt: make or check a password hash",
         }
     }
     /// Shortcut text for this platform. Rule from the original's accelerator

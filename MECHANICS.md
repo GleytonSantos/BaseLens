@@ -358,3 +358,15 @@ Used in the build: PostgreSQL TLS now sets `min_protocol_version(TLS 1.2)` (`TLS
 - Work runs on a background thread (large memory settings never freeze the window); the typed text is cleared after each run and never saved.
 
 Tests `hashes_check_and_describe`, `refuses_what_is_not_argon2`; robot step 20 opens the tool with Ctrl+Shift+H and checks a real hash.
+
+## Round 28 — decompiled: the original's scrypt, added to the hash tool
+
+The original has no Argon2 (no `argon2` string anywhere), but it ships scrypt as its password-hashing function (Node `crypto.scrypt`). Read with native_function_pseudocode:
+
+- **Defaults** (Node's `lib/internal/crypto/scrypt.js`, embedded at **0x16dc1e2**): `N: 16384, r: 8, p: 1, maxmem: 32 << 20` (32 MiB, "matches SCRYPT_MAX_MEM"); 0 for any of them means the default.
+- **`node::crypto::ScryptTraits::AdditionalConfig` 0x2f02270**: refuses passwords and salts of 2^31 bytes or more ("pass is too large" / "salt is too large"), reads N, r, p as Uint32, maxmem as an integer and the key length as Int32 >= 0, then asks BoringSSL whether the settings are valid and throws "Invalid scrypt params[: reason]" otherwise.
+- **0x6841de0 → 0x6d81b80** (BoringSSL `EVP_PBE_scrypt`, `crypto/evp/scrypt.cc`): r and p not 0; `p <= (2^30 - 1) / r`; `2 <= N <= 2^32` and N a power of two (`N & (N-1) == 0`); `N >> (16·r) == 0` when `16·r < 64`; memory: with no maxmem the limit is **0x4100000** (65 MiB); it needs `p < maxmem / (128·r)` and `maxmem/(128·r) - p - 1 >= N`, i.e. **128·r·(N + p + 1) bytes <= maxmem** (the work buffer is `(2p + 2N + 2)·r·64` bytes).
+
+Used in the build (`argon2tool.rs`): the hash tool now also makes and checks **scrypt** hashes (PHC form `$scrypt$ln=14,r=8,p=1$salt$hash`) with the original's defaults (N = 2^14, r = 8, p = 1, 32 MiB limit) and the same parameter rules (`scrypt_params_ok`), shown live under the settings ("uses ≈16.0 MiB", or why it's refused — e.g. N = 2^15 with r = 8 needs 32 MiB + 2 KiB, over the 32 MiB limit, as Node refuses it). Checking a scrypt hash applies the same rules before spending the memory. Test `scrypt_follows_the_originals_rules`.
+
+Also fixed in this round (found by the test robot): the suggestion popup could close in the middle of typing when the editor's response missed its focus for a single frame. It now closes only when focus really moved to another widget (`ctx.memory().focused() != editor`), and the robot logs why the popup last closed. Five robot runs in a row under full CPU load: 31/31 checks.

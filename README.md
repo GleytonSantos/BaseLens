@@ -29,7 +29,7 @@ A free, private desktop editor for **SQLite**, **PostgreSQL** and **MySQL** — 
 | 🔎 **Filters without SQL** | Click a column, pick a condition, or search every text column at once. |
 | ⚡ **Smart editor** | Context-aware autocomplete (tables after `FROM`, columns after `alias.`), real values suggested inside `WHERE`, words learned from your queries, a case-preserving formatter, command palette (`Ctrl+K`) and shortcuts (`F1`). |
 | 🧭 **Lens** | Ask *"is there an email column?"* or *"where is 'Maria'?"* and it tells you which table holds it. |
-| 🔑 **Argon2 tool** | Make or check password hashes (Argon2id/i/d, adjustable memory, passes, lanes and length) — `Ctrl+Shift+H`, or right-click a cell to check its hash or fill it with a new one. |
+| 🔑 **Argon2 / scrypt tool** | Make or check password hashes (Argon2id/i/d with adjustable memory, passes, lanes and length; scrypt with N, r, p) — `Ctrl+Shift+H`, or right-click a cell to check its hash or fill it with a new one. |
 | 📊 **See your data** | Built-in JSON viewer, charts and an ER diagram. |
 | 🤖 **AI assistant** | Local (Ollama / any OpenAI-compatible server), cloud (Anthropic, OpenAI, Google), or the native Claude Code CLI. Read-only queries can run without asking. |
 | 🔐 **Private by default** | Passwords encrypted on your computer with the system keyring, optional PIN lock on idle, read-only connections, verified TLS. |

@@ -488,11 +488,11 @@ pub fn grid(
                                 out.open_json = true;
                                 ui.close_menu();
                             }
-                            if crate::argon2tool::looks_like_hash(&cell.display()) && ui.button("🔑  Check a password against this Argon2 hash…").clicked() {
+                            if crate::argon2tool::looks_like_hash(&cell.display()) && ui.button("🔑  Check a password against this hash…").clicked() {
                                 out.argon2 = Some((Some(cell.display()), None));
                                 ui.close_menu();
                             }
-                            if editable && !deleted && ui.button("🔑  Put a new Argon2 hash here…").clicked() {
+                            if editable && !deleted && ui.button("🔑  Put a new password hash here…").clicked() {
                                 out.argon2 = Some((None, Some((r, c))));
                                 ui.close_menu();
                             }

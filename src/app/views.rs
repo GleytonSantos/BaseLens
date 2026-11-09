@@ -100,6 +100,7 @@ fn apply_completion(ctx: &egui::Context, ed_id: egui::Id, q: &mut QueryTab, idx:
     set_cursor(ctx, ed_id, pos);
     q.cursor = (pos, pos);
     q.ac.open = false;
+    q.ac.closed_by = "accepted";
     q.ac.forced = false;
     q.ac.items.clear();
     q.ac.last_text_len = q.sql.len();
@@ -210,6 +211,7 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
             }
             if i.consume_key(Modifiers::NONE, Key::Escape) {
                 q.ac.open = false;
+                q.ac.closed_by = "escape";
                 q.ac.forced = false;
             }
         });
@@ -263,6 +265,7 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
                     Some(ch) if ch.is_alphanumeric() || ch == '_' => {}
                     _ => {
                         q.ac.open = false;
+                        q.ac.closed_by = "typed a separator";
                         q.ac.forced = false;
                     }
                 }
@@ -283,8 +286,13 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
                 value_loading = Some(format!("{}.{}", vt.table, vt.column));
             }
         }
-        if (q.ac.items.is_empty() && value_loading.is_none()) || !has_focus {
+        // close only when focus really went somewhere else: the editor's own
+        // response can miss its focus for a single frame (seen by the test
+        // robot), which used to close the popup in the middle of typing
+        let focus_away = !has_focus && ctx.memory(|m| m.focused() != Some(ed_id));
+        if (q.ac.items.is_empty() && value_loading.is_none()) || focus_away {
             q.ac.open = false;
+            q.ac.closed_by = if focus_away { "editor lost focus" } else { "no suggestions" };
         }
         q.ac.sel = q.ac.sel.min(q.ac.items.len().saturating_sub(1));
     }

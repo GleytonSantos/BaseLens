@@ -74,25 +74,51 @@ impl App {
                                 }
                             });
                             ui.end_row();
-                            ui.label("Memory (KiB)");
-                            ui.horizontal(|ui| {
-                                ui.add(egui::DragValue::new(&mut s.mem_kib).range(a2::MEM_KIB_RANGE.0..=a2::MEM_KIB_RANGE.1).speed(256));
-                                ui.label(RichText::new(format!("≈ {:.1} MiB", s.mem_kib as f32 / 1024.0)).small().color(p.text_light));
-                            });
-                            ui.end_row();
-                            ui.label("Passes");
-                            ui.add(egui::DragValue::new(&mut s.time).range(a2::TIME_RANGE.0..=a2::TIME_RANGE.1));
-                            ui.end_row();
-                            ui.label("Lanes");
-                            ui.add(egui::DragValue::new(&mut s.lanes).range(a2::LANES_RANGE.0..=a2::LANES_RANGE.1));
-                            ui.end_row();
+                            if s.variant == Variant::Scrypt {
+                                ui.label("Cost N");
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::DragValue::new(&mut s.log_n).range(1..=24).prefix("2^"));
+                                    ui.label(RichText::new(format!("= {}", 1u64 << s.log_n)).small().color(p.text_light));
+                                });
+                                ui.end_row();
+                                ui.label("Block size r");
+                                ui.add(egui::DragValue::new(&mut s.r).range(1..=64));
+                                ui.end_row();
+                                ui.label("Parallelism p");
+                                ui.add(egui::DragValue::new(&mut s.p).range(1..=16));
+                                ui.end_row();
+                                ui.label("Memory limit (MiB)");
+                                ui.add(egui::DragValue::new(&mut s.maxmem_mib).range(1..=1024));
+                                ui.end_row();
+                                ui.label("");
+                                let check = a2::scrypt_params_ok(1u64 << s.log_n, s.r as u64, s.p as u64, s.maxmem_mib as u64 * 1_048_576);
+                                let need = 128.0 * s.r as f64 * ((1u64 << s.log_n) as f64 + s.p as f64 + 1.0) / 1_048_576.0;
+                                match check {
+                                    Ok(()) => ui.label(RichText::new(format!("uses ≈{need:.1} MiB")).small().color(p.text_light)),
+                                    Err(e) => ui.label(RichText::new(e).small().color(p.danger)),
+                                };
+                                ui.end_row();
+                            } else {
+                                ui.label("Memory (KiB)");
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::DragValue::new(&mut s.mem_kib).range(a2::MEM_KIB_RANGE.0..=a2::MEM_KIB_RANGE.1).speed(256));
+                                    ui.label(RichText::new(format!("≈ {:.1} MiB", s.mem_kib as f32 / 1024.0)).small().color(p.text_light));
+                                });
+                                ui.end_row();
+                                ui.label("Passes");
+                                ui.add(egui::DragValue::new(&mut s.time).range(a2::TIME_RANGE.0..=a2::TIME_RANGE.1));
+                                ui.end_row();
+                                ui.label("Lanes");
+                                ui.add(egui::DragValue::new(&mut s.lanes).range(a2::LANES_RANGE.0..=a2::LANES_RANGE.1));
+                                ui.end_row();
+                            }
                             ui.label("Hash length (bytes)");
                             ui.add(egui::DragValue::new(&mut s.out_len).range(a2::OUT_LEN_RANGE.0..=a2::OUT_LEN_RANGE.1));
                             ui.end_row();
                         }
                         Mode::Verify => {
-                            ui.label("Argon2 hash");
-                            ui.add(egui::TextEdit::singleline(&mut tool.check_hash).desired_width(400.0).font(egui::TextStyle::Monospace).hint_text("$argon2id$v=19$m=…"));
+                            ui.label("Hash");
+                            ui.add(egui::TextEdit::singleline(&mut tool.check_hash).desired_width(400.0).font(egui::TextStyle::Monospace).hint_text("$argon2id$… or $scrypt$…"));
                             ui.end_row();
                             if !tool.check_hash.trim().is_empty() {
                                 ui.label("");
@@ -114,7 +140,7 @@ impl App {
                     if ui.add_enabled(can, egui::Button::new(RichText::new(label).color(p.on_primary)).fill(p.primary)).clicked() {
                         tool.start();
                     }
-                    if tool.mode == Mode::Hash && ui.button("Defaults").on_hover_text("Argon2id · 19 MiB · 2 passes · 1 lane · 32 bytes (OWASP baseline)").clicked() {
+                    if tool.mode == Mode::Hash && ui.button("Defaults").on_hover_text("Argon2id · 19 MiB · 2 passes · 1 lane · 32 bytes (OWASP baseline); scrypt · N=16384, r=8, p=1, 32 MiB limit (as in the original)").clicked() {
                         tool.settings = a2::Settings::default();
                     }
                     if busy {

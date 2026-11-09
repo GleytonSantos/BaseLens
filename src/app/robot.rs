@@ -433,7 +433,9 @@ impl App {
                 } else if r.waited > 6 {
                     let (open, first) = self.active_query().map(|q| (q.ac.open, q.ac.items.first().map(|i| (i.label.clone(), i.insert.clone())))).unwrap_or((false, None));
                     let sql = self.active_query().map(|q| q.sql.clone()).unwrap_or_default();
-                    r.log.push(format!("      typed {sql:?} → popup open: {open}, first: {first:?}"));
+                    let focused = self.robot_ctx.as_ref().and_then(|c| c.memory(|m| m.focused()));
+                    let ed = self.active_tab.map(|id| egui::Id::new(("sqled", id)));
+                    r.log.push(format!("      typed {sql:?} → popup open: {open}, first: {first:?}, editor focused: {}, closed by: {}", focused.is_some() && focused == ed, self.active_query().map(|q| q.ac.closed_by).unwrap_or("")));
                     let ok = open && first.as_ref().map(|f| f.0.to_lowercase().starts_with("order")).unwrap_or(false);
                     r.check(ok, &format!("typing {text:?} suggests tables ({})", if upper { "UPPER case" } else { "lower case" }));
                     next(r);

@@ -838,6 +838,42 @@
       "group": "tools",
       "value": 1048576,
       "source": "BaseLens limit (1 GiB) so a typo can't exhaust memory"
+    },
+    {
+      "name": "scrypt default N",
+      "group": "tools",
+      "value": 16384,
+      "source": "Node scrypt.js defaults embedded at 0x16dc1e2"
+    },
+    {
+      "name": "scrypt default r",
+      "group": "tools",
+      "value": 8,
+      "source": "Node scrypt.js defaults embedded at 0x16dc1e2"
+    },
+    {
+      "name": "scrypt default p",
+      "group": "tools",
+      "value": 1,
+      "source": "Node scrypt.js defaults embedded at 0x16dc1e2"
+    },
+    {
+      "name": "scrypt default maxmem (bytes)",
+      "group": "tools",
+      "value": 33554432,
+      "source": "Node scrypt.js defaults (32 << 20) embedded at 0x16dc1e2"
+    },
+    {
+      "name": "scrypt memory rule",
+      "group": "tools",
+      "value": "128*r*(N+p+1) <= maxmem",
+      "source": "BoringSSL EVP_PBE_scrypt at 0x6d81b80"
+    },
+    {
+      "name": "BoringSSL scrypt maxmem when none given (bytes)",
+      "group": "tools",
+      "value": 68157440,
+      "source": "function 0x6d81b80 (0x4100000)"
     }
   ]
 }
