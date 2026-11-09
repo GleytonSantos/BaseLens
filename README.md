@@ -47,7 +47,11 @@ Paste a connection URL (`postgresql://user:pass@host:5432/db?sslmode=require`) a
 
 ## 📦 Install
 
-Grab the file for your system from the [**latest release**](https://github.com/GleytonSantos/BaseLens/releases/latest).
+### ➡️ [**Download the latest release**](https://github.com/GleytonSantos/BaseLens/releases/latest)
+
+All versions: **https://github.com/GleytonSantos/BaseLens/releases**
+
+Grab the file for your system:
 
 | System | Package | Install |
 | --- | --- | --- |
