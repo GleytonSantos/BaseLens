@@ -874,6 +874,30 @@
       "group": "tools",
       "value": 68157440,
       "source": "function 0x6d81b80 (0x4100000)"
+    },
+    {
+      "name": "Query time limit default (s, 0 = never)",
+      "group": "connections",
+      "value": 0,
+      "source": "BaseLens design (Settings → General)"
+    },
+    {
+      "name": "SSH tunnel start timeout (s)",
+      "group": "connections",
+      "value": 20,
+      "source": "BaseLens design (tunnel.rs TUNNEL_START_TIMEOUT)"
+    },
+    {
+      "name": "SSH default port",
+      "group": "connections",
+      "value": 22,
+      "source": "OpenSSH default"
+    },
+    {
+      "name": "SSH keep-alive interval (s)",
+      "group": "connections",
+      "value": 30,
+      "source": "BaseLens design (ServerAliveInterval=30)"
     }
   ]
 }

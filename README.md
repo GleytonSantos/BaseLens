@@ -30,6 +30,8 @@ A free, private desktop editor for **SQLite**, **PostgreSQL** and **MySQL** — 
 | ⚡ **Smart editor** | Context-aware autocomplete (tables after `FROM`, columns after `alias.`), real values suggested inside `WHERE`, words learned from your queries, a case-preserving formatter, command palette (`Ctrl+K`) and shortcuts (`F1`). |
 | 🧭 **Lens** | Ask *"is there an email column?"* or *"where is 'Maria'?"* and it tells you which table holds it. |
 | 🔑 **Argon2 / scrypt tool** | Make or check password hashes (Argon2id/i/d with adjustable memory, passes, lanes and length; scrypt with N, r, p) — `Ctrl+Shift+H`, or right-click a cell to check its hash or fill it with a new one. |
+| 🔐 **SSH tunnels** | Reach databases behind a bastion: BaseLens runs your system's `ssh` with your keys, ssh-agent and `~/.ssh/config`. |
+| ■ **Stop & time limit** | Stop a running query on the server (PostgreSQL cancel, MySQL `KILL QUERY`, SQLite interrupt), or let it stop after N seconds. |
 | 📊 **See your data** | Built-in JSON viewer, charts and an ER diagram. |
 | 🤖 **AI assistant** | Local (Ollama / any OpenAI-compatible server), cloud (Anthropic, OpenAI, Google), or the native Claude Code CLI. Read-only queries can run without asking. |
 | 🔐 **Private by default** | Passwords encrypted on your computer with the system keyring, optional PIN lock on idle, read-only connections, verified TLS. |
@@ -58,6 +60,7 @@ Grab the file for your system:
 | --- | --- | --- |
 | **Debian · Ubuntu · Mint** | `baselens_<version>_amd64.deb` | `sudo apt install ./baselens_*_amd64.deb` |
 | **Fedora · RHEL · openSUSE** | `baselens-<version>.x86_64.rpm` | `sudo dnf install ./baselens-*.x86_64.rpm` |
+| **Arch · Manjaro · CachyOS (AUR)** | `baselens-bin` | `yay -S baselens-bin` (or `paru`) — once published, see below |
 | **Arch · Manjaro · CachyOS** | `baselens-<version>-1-x86_64.pkg.tar.zst` | `sudo pacman -U ./baselens-*.pkg.tar.zst` |
 | **Any Linux (portable)** | `BaseLens-<version>-x86_64.AppImage` | `chmod +x BaseLens-*.AppImage && ./BaseLens-*.AppImage` |
 | **Any Linux (tarball)** | `baselens-<version>-linux-x86_64.tar.gz` | extract and run `./baselens` |
@@ -73,6 +76,8 @@ Grab the file for your system:
 - **Windows** builds are unsigned — SmartScreen may warn once: *More info → Run anyway*.
 - **macOS** is not notarised — the first time, **right-click the app → Open**.
 - **Arch**: you can also build it yourself with `makepkg -si` inside `packaging/arch`.
+- **Package channels**: `packaging/aur/baselens-bin` (AUR), `packaging/homebrew` (tap formula for Linux, cask for the macOS app) and `packaging/winget` (Windows) are ready; `scripts/update-channels.sh <version>` fills in the version and checksums from a published release. They become one-line installs once published (`yay -S baselens-bin`, `brew install gleytonsantos/baselens/baselens`, `winget install GleytonSantos.BaseLens`).
+- **Signing**: the Windows and macOS builds aren't code-signed yet (that needs paid certificates). The checksums of every file are on the release page; the apps don't need admin rights.
 
 </details>
 
