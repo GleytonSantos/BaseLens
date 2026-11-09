@@ -1,41 +1,86 @@
-<p align="center"><img src="assets/baselens-128.png" width="96" alt="BaseLens logo"></p>
+<div align="center">
+
+<img src="assets/baselens-256.png" width="128" alt="BaseLens logo">
 
 # BaseLens
 
-**See into every database.** A free, private desktop editor for SQLite, PostgreSQL and MySQL, written in Rust with [egui](https://github.com/emilk/egui).
+### See into every database.
 
-![BaseLens](docs/screenshot.png)
+A free, private desktop editor for **SQLite**, **PostgreSQL** and **MySQL** — written in Rust with [egui](https://github.com/emilk/egui). One fast, native window. No telemetry. Your data never leaves your machine.
 
-## Features
+[![Release](https://img.shields.io/github/v/release/GleytonSantos/BaseLens?color=8b7bff&label=release)](https://github.com/GleytonSantos/BaseLens/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-38d6c4.svg)](LICENSE)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-dea584.svg?logo=rust)](https://www.rust-lang.org/)
+[![Platforms](https://img.shields.io/badge/Linux%20·%20Windows%20·%20macOS-0d1017.svg)](#-install)
 
-- **One navigator for every database**: several connections (and several instances of the same one) side by side, switch databases without reconnecting.
-- **Filters without SQL**: click a column, pick a condition, search all text columns at once.
-- **Smart editor**: context-aware autocomplete (tables after `FROM`, columns after `alias.`), real values suggested inside `WHERE`, words learned from your queries, `select` and `SELECT` treated the same, formatter that keeps your case, command palette (`Ctrl+K`) and many shortcuts (`F1`).
-- **Lens**: ask "is there an email column?" or "where is 'Maria'?" and it tells you which table has it.
-- **JSON viewer**, charts and an ER diagram.
-- **AI assistant**, local (Ollama) or cloud, or Claude Code from its native install path; read-only queries can run without asking.
-- **Private**: passwords encrypted on your computer (system keyring when available), optional PIN lock on idle, read-only connections.
-- **Dark and light themes**.
-- **Fast on remote servers**: queries never wait behind schema loading (a second connection reads all columns in one query), results arrive in batches and stop at the limit.
-- **Debug mode**: `baselens --debug` (or `BASELENS_DEBUG=1`) shows each query's timeline in a panel (`F12`) and in `~/.local/share/baselens/debug.log`; `baselens --bench "<sql>" [--conn <name>]` times a query 10 times.
+[**Download**](https://github.com/GleytonSantos/BaseLens/releases/latest) · [Install](#-install) · [Features](#-features) · [Build](#-build-from-source)
 
-## Download
+<img src="docs/screenshot.png" width="860" alt="BaseLens screenshot">
 
-Release packages are built by [the release workflow](.github/workflows/release.yml):
+</div>
 
-| System | Package |
+---
+
+## ✨ Features
+
+| | |
 | --- | --- |
-| Debian, Ubuntu, Mint | `baselens_<version>_amd64.deb` |
-| Fedora, openSUSE, RHEL | `baselens-<version>.x86_64.rpm` |
-| Any Linux | `BaseLens-<version>-x86_64.AppImage`, `baselens-<version>-linux-x86_64.tar.gz` |
-| Flatpak | `BaseLens-<version>-x86_64.flatpak` (`flatpak install --user BaseLens-*.flatpak`) |
-| Arch, Manjaro, CachyOS | `baselens-<version>-1-x86_64.pkg.tar.zst` (`sudo pacman -U …`), or `makepkg -si` in `packaging/arch` |
-| Windows 10/11 | `BaseLens-<version>-windows-x64-setup.exe` (installer: Start menu and desktop shortcuts, uninstall from Apps, no admin needed) or `BaseLens-<version>-windows-x64.zip` (portable) |
-| macOS 11+ (Apple Silicon and Intel) | `BaseLens-<version>-macos-universal.dmg` |
+| 🗂️ **One navigator for every database** | Several connections — and several instances of the same one — side by side. Switch databases without reconnecting. |
+| 🔎 **Filters without SQL** | Click a column, pick a condition, or search every text column at once. |
+| ⚡ **Smart editor** | Context-aware autocomplete (tables after `FROM`, columns after `alias.`), real values suggested inside `WHERE`, words learned from your queries, a case-preserving formatter, command palette (`Ctrl+K`) and shortcuts (`F1`). |
+| 🧭 **Lens** | Ask *"is there an email column?"* or *"where is 'Maria'?"* and it tells you which table holds it. |
+| 📊 **See your data** | Built-in JSON viewer, charts and an ER diagram. |
+| 🤖 **AI assistant** | Local (Ollama / any OpenAI-compatible server), cloud (Anthropic, OpenAI, Google), or the native Claude Code CLI. Read-only queries can run without asking. |
+| 🔐 **Private by default** | Passwords encrypted on your computer with the system keyring, optional PIN lock on idle, read-only connections, verified TLS. |
+| 🌗 **Dark & light themes** | Follows your system, or pick one. |
+| 🚀 **Fast on remote servers** | Queries never wait behind schema loading; results arrive in batches and stop at the limit. |
 
-The macOS app is not notarised: the first time, right-click it and choose **Open**.
+## 🗄️ Database support
 
-## Build from source
+| Engine | Connect by | Notes |
+| --- | --- | --- |
+| **SQLite** | file path | opened read-only on request; waits out a locked file |
+| **PostgreSQL** | host / URL | TLS with certificate verification, cursor-paged results |
+| **MySQL / MariaDB** | host / URL | TLS, batched fetch |
+
+Paste a connection URL (`postgresql://user:pass@host:5432/db?sslmode=require`) and BaseLens fills the form for you.
+
+## 📦 Install
+
+Grab the file for your system from the [**latest release**](https://github.com/GleytonSantos/BaseLens/releases/latest).
+
+| System | Package | Install |
+| --- | --- | --- |
+| **Debian · Ubuntu · Mint** | `baselens_<version>_amd64.deb` | `sudo apt install ./baselens_*_amd64.deb` |
+| **Fedora · RHEL · openSUSE** | `baselens-<version>.x86_64.rpm` | `sudo dnf install ./baselens-*.x86_64.rpm` |
+| **Arch · Manjaro · CachyOS** | `baselens-<version>-1-x86_64.pkg.tar.zst` | `sudo pacman -U ./baselens-*.pkg.tar.zst` |
+| **Any Linux (portable)** | `BaseLens-<version>-x86_64.AppImage` | `chmod +x BaseLens-*.AppImage && ./BaseLens-*.AppImage` |
+| **Any Linux (tarball)** | `baselens-<version>-linux-x86_64.tar.gz` | extract and run `./baselens` |
+| **Flatpak** | `BaseLens-<version>-x86_64.flatpak` | `flatpak install --user BaseLens-*.flatpak` |
+| **Windows 10 / 11** | `…-windows-x64-setup.exe` | run the installer (Start-menu + desktop shortcut, no admin) |
+| **Windows (portable)** | `…-windows-x64.zip` | unzip, run `BaseLens.exe` |
+| **macOS 11+ (Apple Silicon & Intel)** | `…-macos-universal.dmg` | open the `.dmg`, drag to Applications |
+
+<details>
+<summary><b>Platform notes</b></summary>
+
+- **AppImage** installs its own menu entry and icon on first launch; remove with `./BaseLens-*.AppImage --remove-desktop-entry`.
+- **Windows** builds are unsigned — SmartScreen may warn once: *More info → Run anyway*.
+- **macOS** is not notarised — the first time, **right-click the app → Open**.
+- **Arch**: you can also build it yourself with `makepkg -si` inside `packaging/arch`.
+
+</details>
+
+## 🔐 Security
+
+- Database passwords and API keys are encrypted with **ChaCha20-Poly1305**; the master key lives in your **system keyring** (libsecret / KDE Wallet), or in a private `0600` file when no keyring is available.
+- **TLS certificates are verified** by default; the automatic plaintext→TLS upgrade verifies too.
+- **Read-only connections** are enforced at the driver level (SQLite open flag, `SET TRANSACTION READ ONLY`), and the AI never auto-runs anything but a verified read query.
+- Optional **PIN lock** when the app sits idle.
+
+Nothing is sent anywhere unless *you* pick a cloud AI provider.
+
+## 🛠️ Build from source
 
 ```sh
 cargo run --release
@@ -43,32 +88,35 @@ cargo run --release
 
 Linux needs `pkg-config` and the OpenSSL headers (`libssl-dev` / `openssl-devel`).
 
-### Packages
+<details>
+<summary><b>Build the distributable packages</b></summary>
 
-| Command | Makes | Where it runs |
+| Command | Makes | Runs on |
 | --- | --- | --- |
-| `scripts/build-all.sh` | everything below that this computer can make | Linux with Docker |
-| `scripts/package-linux.sh` | `.deb`, `.rpm`, AppImage, `.tar.gz` | inside `packaging/docker` (Debian 12, so it runs on older distros) |
-| `scripts/package-windows.sh` | Windows installer `-setup.exe` (NSIS) and portable `.zip` (cross-compiled) | inside `packaging/docker` |
-| `scripts/package-flatpak.sh` | `.flatpak` bundle | Linux with `flatpak` and `org.freedesktop.Platform//25.08` |
+| `scripts/build-all.sh` | everything this machine can make | Linux + Docker |
+| `scripts/package-linux.sh` | `.deb`, `.rpm`, AppImage, `.tar.gz` | `packaging/docker` (Debian 12) |
+| `scripts/package-windows.sh` | NSIS installer + portable `.zip` | `packaging/docker` (cross-compiled) |
+| `scripts/package-flatpak.sh` | `.flatpak` bundle | Linux + `flatpak` |
 | `scripts/package-arch.sh` | `.pkg.tar.zst` | Arch-based Linux |
-| `scripts/package-macos.sh` | universal `.app` in `.dmg` and `.zip` | macOS |
+| `scripts/package-macos.sh` | universal `.app` in `.dmg` / `.zip` | macOS |
 
-Everything lands in `dist/`.
+Everything lands in `dist/`. Releases are built automatically by [`.github/workflows/release.yml`](.github/workflows/release.yml) on every `v*` tag.
 
-### Command-line options
+</details>
+
+## ⌨️ Command-line options
 
 | Option | What it does |
 | --- | --- |
-| `--debug` | debug mode (timings panel on `F12`, `debug.log`) |
-| `--bench "<sql>" [--conn <name>]` | runs a query 10 times on a saved connection and prints min / avg / max of each step |
-| `--screenshot <file.png>` | opens with demo data, saves a picture of the window and quits |
-| `--self-test` | test robot: clicks and types through the app and reports problems |
-| `--install-desktop-entry` / `--remove-desktop-entry` | adds or removes the menu entry and icon for a copy not installed by a package (the AppImage does it by itself on first start) |
-| `--app-id` | prints the window id the desktop uses to find the icon |
-| `--export-brand <folder>` | writes the logo (SVG, PNGs, .ico) and the .desktop file |
+| `--debug` | debug mode: timings panel (`F12`) and `debug.log` |
+| `--bench "<sql>" [--conn <name>]` | times a query 10× on a saved connection |
+| `--screenshot <file.png>` | opens with demo data, saves a picture, quits |
+| `--self-test` | test robot: clicks and types through the app, reports problems |
+| `--install-desktop-entry` / `--remove-desktop-entry` | add / remove menu entry and icon for a non-packaged copy |
+| `--app-id` | prints the window id the desktop uses for the icon |
+| `--export-brand <folder>` | writes the logo (SVG, PNGs, `.ico`) and `.desktop` file |
 
-## Tests
+## 🧪 Tests
 
 ```sh
 cargo test                       # unit tests
@@ -76,10 +124,16 @@ cargo run -- --self-test         # UI test robot
 BASELENS_PG_TEST=postgresql://user:pw@localhost/db cargo test live_pg -- --ignored
 ```
 
-## How it works
+## 📖 How it works
 
-[MECHANICS.md](MECHANICS.md) lists the values and rules the app uses and where each one comes from; [mechanics.json](mechanics.json) has the same values in machine-readable form.
+[MECHANICS.md](MECHANICS.md) lists every value and rule the app uses and where each one comes from; [mechanics.json](mechanics.json) has the same, machine-readable.
 
-## License
+## 📄 License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © Gleyton Santos
+
+<div align="center">
+
+**[⬆ Download the latest release](https://github.com/GleytonSantos/BaseLens/releases/latest)**
+
+</div>
