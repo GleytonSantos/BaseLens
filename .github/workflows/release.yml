@@ -113,10 +113,11 @@ jobs:
             dist/*.zip
 
   release:
-    # Publish as long as the core Linux and Windows builds succeeded, even if
-    # an optional job (macOS, Flatpak, Arch) failed or a runner is unavailable.
+    # Publish as soon as the core builds are ready; do NOT wait on the optional
+    # jobs (macOS, Flatpak) — a stuck or unavailable runner must never block the
+    # release. Whatever artifacts those jobs produced in time are still picked up.
     if: always() && startsWith(github.ref, 'refs/tags/v') && needs.linux.result == 'success' && needs.windows.result == 'success'
-    needs: [linux, flatpak, arch, windows, macos]
+    needs: [linux, windows, arch]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
