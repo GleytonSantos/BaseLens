@@ -344,3 +344,14 @@ fn debug_log_is_private() {
     assert_eq!(mode(&dir.join("debug.log")), 0o600);
     assert_eq!(mode(&dir), 0o700);
 }
+
+#[test]
+fn tls_floor_is_tls12() {
+    assert_eq!(TLS_MIN_VERSION, "TLSv1.2");
+    for v in ["TLSv1", "TLSv1.1", "SSLv3"] {
+        assert!(tls_version_too_old(v), "{v}");
+    }
+    for v in ["TLSv1.2", "TLSv1.3"] {
+        assert!(!tls_version_too_old(v), "{v}");
+    }
+}

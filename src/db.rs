@@ -16,6 +16,19 @@ pub const PG_FETCH_BATCH: usize = 200;
 /// 1, 2, 5, 10, 15, 20, 25, 25, 25, 50, 50, 100 ms, then 100 ms each time,
 /// and the last sleep is cut so the total never passes the timeout.
 pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5000;
+/// Oldest TLS version accepted, as in the original: Node's
+/// `tls.DEFAULT_MIN_VERSION = 'TLSv1.2'` (no `--tls-min-v1.x` flag), applied
+/// by `SecureContext::Init` 0x2ed35b0 / `SetMinProto` 0x2ed4e40 through
+/// SSL_CTX_set_min_proto_version (0x303 = TLS 1.2; max 0x304 = TLS 1.3;
+/// SSLv2/SSLv3 methods are refused outright).
+pub const TLS_MIN_VERSION: &str = "TLSv1.2";
+
+/// True for a negotiated TLS version older than TLS 1.2 ("TLSv1", "TLSv1.1",
+/// "SSLv3"...).
+pub fn tls_version_too_old(v: &str) -> bool {
+    let v = v.trim();
+    matches!(v, "TLSv1" | "TLSv1.0" | "TLSv1.1" | "SSLv3" | "SSLv2")
+}
 /// TCP keep-alive probes once a socket is on, as libuv sets them
 /// (uv__tcp_keepalive 0x2a19260): TCP_KEEPINTVL = 1 s, TCP_KEEPCNT = 10.
 pub const TCP_KEEPALIVE_INTERVAL_S: u64 = 1;
@@ -912,6 +925,8 @@ pub fn pg_advice(e: &postgres::Error, cfg: &ConnConfig, user: &str) -> Option<St
         Some(format!("No reply from {}:{port} within {} seconds. Check the host, the port and any firewall/VPN.", cfg.host, PG_CONNECT_TIMEOUT_MS / 1000))
     } else if t.contains("failed to lookup") || t.contains("name or service not known") || t.contains("resolve") {
         Some(format!("The host name “{}” could not be found. Check it for typos.", cfg.host))
+    } else if t.contains("protocol version") || t.contains("unsupported protocol") {
+        Some(format!("The server only offers an old TLS version (before {TLS_MIN_VERSION}), which is no longer safe; BaseLens, like the original app, needs {TLS_MIN_VERSION} or newer. Ask the server's admin to enable it."))
     } else if t.contains("certificate") {
         Some("The server's TLS certificate couldn't be verified (self-signed or for another name). Untick “Verify certificate” only if you trust this network and server: without the check, someone in between could pretend to be the server and read the password.".into())
     } else if t.contains("server does not support tls") || t.contains("tls") && cfg.ssl {
@@ -944,6 +959,7 @@ fn pg_connect(cfg: &ConnConfig, password: &str, user: &str, tls: bool, verify: b
     if tls {
         pc.ssl_mode(postgres::config::SslMode::Require);
         let connector = native_tls::TlsConnector::builder()
+            .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
             .danger_accept_invalid_certs(!verify)
             .danger_accept_invalid_hostnames(!verify)
             .build();
@@ -1448,6 +1464,19 @@ fn open_mysql(cfg: &ConnConfig, password: &str) -> Result<My, String> {
         ));
     }
     let mut c = mysql::Conn::new(b).map_err(|e| e.to_string())?;
+    if cfg.ssl {
+        // the MySQL driver can't be told a minimum TLS version, so check the
+        // one the server agreed to and refuse anything older than TLS 1.2
+        let v: Option<(String, String)> = c.query_first("SHOW SESSION STATUS LIKE 'Ssl_version'").unwrap_or(None);
+        if let Some((_, v)) = v {
+            if v.trim().is_empty() {
+                return Err("“Use TLS/SSL” is on, but the server didn't encrypt the connection. Nothing was sent; check the server's TLS settings.".into());
+            }
+            if tls_version_too_old(&v) {
+                return Err(format!("The server only offers {v}, which is no longer safe; BaseLens needs {TLS_MIN_VERSION} or newer, like the original app. Ask the server's admin to enable {TLS_MIN_VERSION}."));
+            }
+        }
+    }
     if cfg.read_only {
         let _ = c.query_drop("SET SESSION TRANSACTION READ ONLY");
     }

@@ -338,3 +338,13 @@ Used in the build (`integrate::app_id`): BaseLens also takes its identity from t
 6. **App-lock PIN** is hashed with Argon2id (PHC string, `argon2` defaults: 19 MiB, 2 passes, 1 lane). Old SHA-256 hashes still unlock once and are replaced by Argon2id.
 
 Tests: `read_only_gate_blocks_side_effect_functions`, `pin_hash_is_argon2id_and_old_hashes_still_unlock`, `debug_log_is_private`.
+
+## Round 26 — decompiled: the original's TLS version limits
+
+Read with native_function_pseudocode:
+
+- **`node::crypto::SecureContext::Init` 0x2ed35b0**: refuses `SSLv2_*` and `SSLv3_*` methods outright ("SSLv2/SSLv3 methods disabled"); `TLS_method` starts with min = 0 and max = **0x304 (TLS 1.3)**; the `TLSv1_*`, `TLSv1_1_*`, `TLSv1_2_*` methods pin min and max to 0x301 / 0x302 / 0x303; then `SSL_CTX_set_min_proto_version` (0x6de2ca0) and `SSL_CTX_set_max_proto_version` (0x6de2ce0) are applied, plus 16-byte session-ticket keys.
+- **`SecureContext::SetMinProto` 0x2ed4e40**: takes an Int32 from JavaScript and passes it to the same `SSL_CTX_set_min_proto_version`.
+- The JavaScript side (Node's `tls.js`, embedded at 0x1b6f6e4; flags parsed by `EnvironmentOptionsParser` at 0x2dcc76d…0x2dcc7d0): with no `--tls-min-v1.x` flag, **`DEFAULT_MIN_VERSION = 'TLSv1.2'`** and `DEFAULT_MAX_VERSION = 'TLSv1.3'`.
+
+Used in the build: PostgreSQL TLS now sets `min_protocol_version(TLS 1.2)` (`TLS_MIN_VERSION`); the MySQL driver has no such option, so after connecting BaseLens reads `SHOW SESSION STATUS LIKE 'Ssl_version'` and refuses anything older than TLS 1.2 (or an unencrypted session when TLS was asked for). A server stuck on old TLS gets a clear message instead of "doesn't accept TLS". Checked live: a PostgreSQL limited to TLS 1.0–1.1 is refused with that message; the same server on its defaults connects. Test `tls_floor_is_tls12`.
