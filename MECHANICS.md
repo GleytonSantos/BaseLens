@@ -300,3 +300,15 @@ Used in the build (`db.rs`): PostgreSQL and MySQL connections now turn keep-aliv
 - **Windows**: `BaseLens.exe` carries the icon (16, 24, 32, 48, 64, 256 px), version info and an application manifest (`packaging/windows/baselens.exe.manifest`: per-monitor DPI v2 for sharp text, Common Controls 6, UTF-8 code page, long paths, runs without admin). New installer `BaseLens-<v>-windows-x64-setup.exe` (NSIS, `packaging/windows/installer.nsi`): per-user install in `%LOCALAPPDATA%\Programs\BaseLens`, Start menu and desktop shortcuts with the icon, an entry in Apps with icon and version, and an uninstaller that keeps the person's settings. Checked under Wine: files, shortcut and Apps entry are created.
 - **Linux**: `.deb`, `.rpm` and Arch now all ship the icon at 16, 24 (deb/rpm/Arch), 32, 48, 64, 128, 256, 512 px plus SVG, the `.desktop` file and AppStream metadata; AppImage has `.DirIcon` and the full icon set; Flatpak uses `dev.baselens.BaseLens` icons. The AppImage is now written beside and renamed into place, so an open copy can't make the build fail.
 - **macOS**: `.icns` built from the same PNGs (unchanged).
+
+## Round 22 — decompiled: how SQLite waits for a busy file
+
+Found by searching the original for SQLite's busy-wait tables (delays at **0x2101a90**: `01 02 05 0a 0f 14 19 19 19 32 32 64`; running totals at **0x2101a9c**: `00 01 03 08 12 21 35 4e 67 80 b2 e4`), both used only by **0x685df20** (`sqliteDefaultBusyCallback`), read with native_function_pseudocode:
+
+- wait number `n` ≤ 11: sleep `delays[n]` ms, having already waited `totals[n]` ms;
+- `n` ≥ 12: sleep 100 ms, already waited `n·100 − 872` ms (the constant `0xfffffc98`);
+- if `waited + sleep > timeout` the sleep is cut to `timeout − waited`; when nothing is left it gives up (returns 0 → "database is locked");
+- the sleep is passed to the VFS as microseconds (`ms · 1000`, `0x3e8`).
+- The timeout itself is better-sqlite3's default `timeout: 5000` ms (`app.asar.unpacked/node_modules/better-sqlite3/lib/database.js`).
+
+Used in the build: SQLite connections now set `busy_timeout(5000 ms)` (`SQLITE_BUSY_TIMEOUT_MS`), which uses this same handler, so a file another program is writing is waited for (59 waits adding up to exactly 5000 ms) instead of failing at once with "database is locked". Tests `busy_handler_schedule_matches_the_original` and `sqlite_waits_for_a_busy_file_instead_of_failing` (another connection holds a write for 400 ms; BaseLens's insert waits and succeeds).

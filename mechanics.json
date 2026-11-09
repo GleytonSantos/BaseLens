@@ -754,6 +754,24 @@
       "group": "connections",
       "value": 60,
       "source": "BaseLens choice; libuv function 0x2a19260 (uv__tcp_keepalive) via 0x2a193b0 (uv_tcp_keepalive) refuses 0"
+    },
+    {
+      "name": "SQLite busy timeout (ms)",
+      "group": "connections",
+      "value": 5000,
+      "source": "better-sqlite3 lib/database.js default timeout; waits done by function 0x685df20 (sqliteDefaultBusyCallback)"
+    },
+    {
+      "name": "SQLite busy wait delays (ms)",
+      "group": "connections",
+      "value": "1, 2, 5, 10, 15, 20, 25, 25, 25, 50, 50, 100, then 100",
+      "source": "function 0x685df20 (sqliteDefaultBusyCallback), table 0x2101a90"
+    },
+    {
+      "name": "SQLite busy waited after wait n>=12 (ms)",
+      "group": "connections",
+      "value": "n*100 - 872",
+      "source": "function 0x685df20 (sqliteDefaultBusyCallback) (constant 0xfffffc98), totals table 0x2101a9c"
     }
   ]
 }

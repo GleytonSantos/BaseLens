@@ -10,6 +10,12 @@ pub const MYSQL_CONNECT_TIMEOUT_MS: u64 = 60000; // MECHANICS: [db.mysql] "1 min
 /// Rows asked from the server per round trip (first batch); later batches
 /// double up to PG_FETCH_MAX so big results don't need hundreds of trips.
 pub const PG_FETCH_BATCH: usize = 200;
+/// How long a SQLite file that another program is writing is waited for
+/// before "database is locked" (better-sqlite3's default `timeout`, 5000 ms).
+/// SQLite's default busy handler (0x685df20 in the original) sleeps
+/// 1, 2, 5, 10, 15, 20, 25, 25, 25, 50, 50, 100 ms, then 100 ms each time,
+/// and the last sleep is cut so the total never passes the timeout.
+pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5000;
 /// TCP keep-alive probes once a socket is on, as libuv sets them
 /// (uv__tcp_keepalive 0x2a19260): TCP_KEEPINTVL = 1 s, TCP_KEEPCNT = 10.
 pub const TCP_KEEPALIVE_INTERVAL_S: u64 = 1;
@@ -619,6 +625,7 @@ fn open_sqlite(cfg: &ConnConfig) -> Result<Sqlite, String> {
         return Err("Choose a database file first.".into());
     }
     let c = rusqlite::Connection::open_with_flags(&cfg.path, flags).map_err(|e| e.to_string())?;
+    let _ = c.busy_timeout(Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS));
     // Loading native extensions stays off (MECHANICS: allowRuntimeExtensions = false).
     let _ = c.execute_batch("PRAGMA foreign_keys = ON;");
     Ok(Sqlite { c, path: cfg.path.clone() })

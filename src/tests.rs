@@ -244,3 +244,58 @@ fn live_pg() {
     let (r, _) = run("select count(*) from orders where customer = 'tx-test'", 100);
     assert_eq!(r.unwrap()[0].rows[0][0].display(), "0");
 }
+
+/// SQLite's default busy handler, as read in the original (0x685df20):
+/// delays[i] for the i-th wait, totals[i] already waited; past 11 waits,
+/// 100 ms each; the last wait is cut to what is left of the timeout.
+fn busy_sleep(count: usize, timeout_ms: i64) -> Option<i64> {
+    const DELAYS: [i64; 12] = [1, 2, 5, 10, 15, 20, 25, 25, 25, 50, 50, 100];
+    const TOTALS: [i64; 12] = [0, 1, 3, 8, 18, 33, 53, 78, 103, 128, 178, 228];
+    let (delay, prior) = if count < 12 { (DELAYS[count], TOTALS[count]) } else { (100, TOTALS[11] + (count as i64 - 11) * 100) };
+    if prior + delay > timeout_ms {
+        let left = timeout_ms - prior;
+        return if left <= 0 { None } else { Some(left) };
+    }
+    Some(delay)
+}
+
+#[test]
+fn busy_handler_schedule_matches_the_original() {
+    // the table and formula: 12th wait onwards = count*100 - 872 ms already waited
+    assert_eq!(busy_sleep(12, i64::MAX), Some(100));
+    assert_eq!(TOTAL_AT_12, 328);
+    let mut waited = 0;
+    let mut n = 0;
+    while let Some(d) = busy_sleep(n, SQLITE_BUSY_TIMEOUT_MS as i64) {
+        waited += d;
+        n += 1;
+    }
+    assert_eq!(waited, 5000);
+    assert_eq!(n, 59);
+}
+const TOTAL_AT_12: i64 = 12 * 100 - 872;
+
+#[test]
+fn sqlite_waits_for_a_busy_file_instead_of_failing() {
+    use std::time::Duration;
+    let dir = std::env::temp_dir().join(format!("baselens-busy-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("busy.sqlite");
+    let other = rusqlite::Connection::open(&path).unwrap();
+    other.execute_batch("CREATE TABLE IF NOT EXISTS t(x); BEGIN IMMEDIATE; INSERT INTO t VALUES (1);").unwrap();
+    let cfg = ConnConfig { kind: DbKind::Sqlite, path: path.to_string_lossy().into(), ..Default::default() };
+    let h = spawn(cfg, String::new());
+    assert!(matches!(h.rx.recv().unwrap(), Response::Connected { .. }));
+    let _ = h.rx.recv().unwrap();
+    // the other program finishes its write after 400 ms
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(400));
+        other.execute_batch("COMMIT").unwrap();
+    });
+    assert!(h.send(Request::Query { tag: 1, sql: "INSERT INTO t VALUES (2)".into(), max_rows: 10, sent: std::time::Instant::now() }));
+    match h.rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+        Response::QueryDone { results, .. } => assert!(results.is_ok(), "{:?}", results.err()),
+        _ => panic!("unexpected response"),
+    }
+    release.join().unwrap();
+}
