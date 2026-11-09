@@ -898,6 +898,18 @@
       "group": "connections",
       "value": 30,
       "source": "BaseLens design (ServerAliveInterval=30)"
+    },
+    {
+      "name": "Network family autoselection attempt timeout (ms)",
+      "group": "connections",
+      "value": 250,
+      "source": "EnvironmentOptions ctor 0x2dd42f0 (+0x110 = 0xfa, instruction at 0x2dd4390)"
+    },
+    {
+      "name": "Network family autoselection minimum attempt timeout (ms)",
+      "group": "connections",
+      "value": 10,
+      "source": "Node net.js embedded at 0x14db1af (autoSelectFamilyAttemptTimeout < 10 → 10)"
     }
   ]
 }

@@ -23,6 +23,58 @@ pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5000;
 /// SSLv2/SSLv3 methods are refused outright).
 pub const TLS_MIN_VERSION: &str = "TLSv1.2";
 
+/// Picking between IPv6 and IPv4 addresses, as the original does (Node's
+/// "network family autoselection", on by default): `EnvironmentOptions`
+/// constructor 0x2dd42f0 sets `network_family_autoselection = true` (+0x108)
+/// and `network_family_autoselection_attempt_timeout = 0xfa` (+0x110) =
+/// 250 ms; `net.js` raises anything below 10 ms to 10.
+pub const AUTOSELECT_ATTEMPT_MS: u64 = 250;
+pub const AUTOSELECT_MIN_MS: u64 = 10;
+
+/// Node's order (`lookupAndConnectMultiple` in net.js): addresses grouped by
+/// family, the family of the first answer first, each address once, then
+/// alternating between the two families.
+pub fn interleave_families(addrs: &[std::net::SocketAddr]) -> Vec<std::net::SocketAddr> {
+    let Some(first) = addrs.first() else { return vec![] };
+    let first_v6 = first.is_ipv6();
+    let (mut a, mut b): (Vec<std::net::SocketAddr>, Vec<std::net::SocketAddr>) = (vec![], vec![]);
+    for x in addrs {
+        let group = if x.is_ipv6() == first_v6 { &mut a } else { &mut b };
+        if !group.iter().any(|y| y.ip() == x.ip()) {
+            group.push(*x);
+        }
+    }
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    for i in 0..a.len().max(b.len()) {
+        if let Some(x) = a.get(i) {
+            out.push(*x);
+        }
+        if let Some(x) = b.get(i) {
+            out.push(*x);
+        }
+    }
+    out
+}
+
+/// When a host name has several addresses (typically IPv6 and IPv4), finds
+/// one that answers, trying them in Node's order and giving each 250 ms, so a
+/// broken IPv6 route doesn't cost the driver's whole connect timeout. None
+/// means "let the driver try as usual" (one address, an IP literal, or none
+/// answered that fast).
+pub fn autoselect_address(host: &str, port: u16) -> Option<std::net::IpAddr> {
+    use std::net::{TcpStream, ToSocketAddrs};
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    let addrs: Vec<_> = (host, port).to_socket_addrs().ok()?.collect();
+    let order = interleave_families(&addrs);
+    if order.len() < 2 {
+        return None;
+    }
+    let wait = Duration::from_millis(AUTOSELECT_ATTEMPT_MS.max(AUTOSELECT_MIN_MS));
+    order.iter().find(|a| TcpStream::connect_timeout(a, wait).is_ok()).map(|a| a.ip())
+}
+
 /// True for a negotiated TLS version older than TLS 1.2 ("TLSv1", "TLSv1.1",
 /// "SSLv3"...).
 pub fn tls_version_too_old(v: &str) -> bool {
@@ -1105,6 +1157,9 @@ fn pg_connect(cfg: &ConnConfig, password: &str, user: &str, tls: bool, verify: b
             pc.hostaddr(std::net::IpAddr::from([127, 0, 0, 1])).port(local);
         }
         None => {
+            if let Some(ip) = autoselect_address(&cfg.host, cfg.port) {
+                pc.hostaddr(ip);
+            }
             pc.port(cfg.port);
         }
     }
@@ -1698,7 +1753,12 @@ fn open_mysql(cfg: &ConnConfig, password: &str) -> Result<My, String> {
     use mysql::prelude::Queryable;
     let (host, port) = match cfg.via {
         Some(local) => ("127.0.0.1".to_string(), local),
-        None => (cfg.host.clone(), cfg.port),
+        None => {
+            // the MySQL driver checks the certificate against this name, so
+            // only swap in the address that answered when that check is off
+            let pick = if cfg.ssl && cfg.ssl_verify { None } else { autoselect_address(&cfg.host, cfg.port) };
+            (pick.map(|ip| ip.to_string()).unwrap_or_else(|| cfg.host.clone()), cfg.port)
+        }
     };
     let mut b = mysql::OptsBuilder::new()
         .ip_or_hostname(Some(host))

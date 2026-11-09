@@ -444,3 +444,19 @@ fn sqlite_query_can_be_stopped() {
     }
     assert!(t.elapsed() < Duration::from_secs(5));
 }
+
+#[test]
+fn address_order_follows_node() {
+    use std::net::SocketAddr;
+    let a = |s: &str| s.parse::<SocketAddr>().unwrap();
+    // first answer IPv6: v6, v4, v6, v4…; duplicates dropped
+    let got = interleave_families(&[a("[2001:db8::1]:5432"), a("[2001:db8::2]:5432"), a("192.0.2.1:5432"), a("[2001:db8::1]:5432"), a("192.0.2.2:5432")]);
+    let want = vec![a("[2001:db8::1]:5432"), a("192.0.2.1:5432"), a("[2001:db8::2]:5432"), a("192.0.2.2:5432")];
+    assert_eq!(got, want);
+    // first answer IPv4: v4 first
+    let got = interleave_families(&[a("192.0.2.1:1"), a("[2001:db8::1]:1")]);
+    assert!(got[0].is_ipv4() && got[1].is_ipv6());
+    assert_eq!(AUTOSELECT_ATTEMPT_MS, 250);
+    // literals and single addresses are left to the driver
+    assert_eq!(autoselect_address("127.0.0.1", 1), None);
+}
