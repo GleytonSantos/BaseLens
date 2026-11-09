@@ -30,7 +30,142 @@ impl App {
         self.new_row_window(ctx);
         self.quick_search(ctx);
         self.shortcuts_window(ctx);
+        self.argon2_window(ctx);
         self.save_query_window(ctx);
+    }
+
+    /// Argon2 tool (Ctrl+Shift+H or a cell's menu): make or check a hash.
+    fn argon2_window(&mut self, ctx: &egui::Context) {
+        use crate::argon2tool::{self as a2, Mode, Variant};
+        let Some(mut tool) = self.argon2.take() else { return };
+        tool.poll();
+        let p = self.pal;
+        let mut open = true;
+        let mut use_in_cell: Option<String> = None;
+        let target_ok = tool.target.and_then(|(tid, _, _)| self.tabs.iter().find(|t| t.id == tid)).map(|t| matches!(t.kind, TabKind::Table(_))).unwrap_or(false);
+        egui::Window::new("🔑 Argon2")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(560.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut tool.mode, Mode::Hash, "Make a hash");
+                    ui.selectable_value(&mut tool.mode, Mode::Verify, "Check a password");
+                });
+                ui.add_space(6.0);
+                egui::Grid::new("a2grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                    ui.label("Password / text");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut tool.text).password(!tool.show_text).desired_width(360.0).hint_text("typed here, never saved"));
+                        let eye = if tool.show_text { "🙈" } else { "👁" };
+                        if ui.button(eye).on_hover_text("Show / hide").clicked() {
+                            tool.show_text = !tool.show_text;
+                        }
+                    });
+                    ui.end_row();
+                    match tool.mode {
+                        Mode::Hash => {
+                            let s = &mut tool.settings;
+                            ui.label("Type");
+                            egui::ComboBox::from_id_salt("a2var").selected_text(s.variant.label()).show_ui(ui, |ui| {
+                                for v in Variant::ALL {
+                                    ui.selectable_value(&mut s.variant, v, v.label());
+                                }
+                            });
+                            ui.end_row();
+                            ui.label("Memory (KiB)");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::DragValue::new(&mut s.mem_kib).range(a2::MEM_KIB_RANGE.0..=a2::MEM_KIB_RANGE.1).speed(256));
+                                ui.label(RichText::new(format!("≈ {:.1} MiB", s.mem_kib as f32 / 1024.0)).small().color(p.text_light));
+                            });
+                            ui.end_row();
+                            ui.label("Passes");
+                            ui.add(egui::DragValue::new(&mut s.time).range(a2::TIME_RANGE.0..=a2::TIME_RANGE.1));
+                            ui.end_row();
+                            ui.label("Lanes");
+                            ui.add(egui::DragValue::new(&mut s.lanes).range(a2::LANES_RANGE.0..=a2::LANES_RANGE.1));
+                            ui.end_row();
+                            ui.label("Hash length (bytes)");
+                            ui.add(egui::DragValue::new(&mut s.out_len).range(a2::OUT_LEN_RANGE.0..=a2::OUT_LEN_RANGE.1));
+                            ui.end_row();
+                        }
+                        Mode::Verify => {
+                            ui.label("Argon2 hash");
+                            ui.add(egui::TextEdit::singleline(&mut tool.check_hash).desired_width(400.0).font(egui::TextStyle::Monospace).hint_text("$argon2id$v=19$m=…"));
+                            ui.end_row();
+                            if !tool.check_hash.trim().is_empty() {
+                                ui.label("");
+                                let (txt, col) = match a2::describe(&tool.check_hash) {
+                                    Ok(d) => (d, p.text_light),
+                                    Err(e) => (e, p.danger),
+                                };
+                                ui.label(RichText::new(txt).small().color(col));
+                                ui.end_row();
+                            }
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let busy = tool.busy.is_some();
+                    let label = if tool.mode == Mode::Hash { "Make hash" } else { "Check" };
+                    let can = !busy && !tool.text.is_empty() && (tool.mode == Mode::Hash || !tool.check_hash.trim().is_empty());
+                    if ui.add_enabled(can, egui::Button::new(RichText::new(label).color(p.on_primary)).fill(p.primary)).clicked() {
+                        tool.start();
+                    }
+                    if tool.mode == Mode::Hash && ui.button("Defaults").on_hover_text("Argon2id · 19 MiB · 2 passes · 1 lane · 32 bytes (OWASP baseline)").clicked() {
+                        tool.settings = a2::Settings::default();
+                    }
+                    if busy {
+                        ui.spinner();
+                        ui.label(RichText::new("working…").small().color(p.text_light));
+                    }
+                });
+                if let Some(r) = &tool.result {
+                    let (t, c) = match r {
+                        Ok(m) => (m.as_str(), p.success),
+                        Err(e) => (e.as_str(), p.danger),
+                    };
+                    ui.label(RichText::new(t).color(c));
+                }
+                if tool.mode == Mode::Hash && !tool.output.is_empty() {
+                    ui.add_space(4.0);
+                    let mut out = tool.output.clone();
+                    ui.add(egui::TextEdit::multiline(&mut out).desired_rows(2).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace));
+                    ui.horizontal(|ui| {
+                        if ui.button("Copy").clicked() {
+                            ui.ctx().copy_text(tool.output.clone());
+                        }
+                        if ui.button("Copy as SQL text").on_hover_text("'…' ready to paste into a query").clicked() {
+                            ui.ctx().copy_text(crate::db::sql_string(&tool.output));
+                        }
+                        if target_ok && ui.add(egui::Button::new(RichText::new("Use in the cell").color(p.on_primary)).fill(p.primary)).clicked() {
+                            use_in_cell = Some(tool.output.clone());
+                        }
+                    });
+                }
+                ui.add_space(4.0);
+                ui.label(RichText::new("Each hash gets a new random salt, so the same password gives a different hash every time; checking reads the settings stored in the hash.").small().color(p.text_lighter));
+            });
+        if let (Some(h), Some((tid, r, c))) = (use_in_cell, tool.target) {
+            if let Some(t) = self.tab_mut(tid) {
+                if let TabKind::Table(tt) = &mut t.kind {
+                    tt.grid.selected = Some((r, c));
+                    tt.grid.editing = Some((r, c, h));
+                    tt.grid.focus_edit = true;
+                }
+            }
+            self.active_tab = Some(tid);
+            self.toast("Hash placed in the cell: press Enter to keep it, then Save (Ctrl+S).", true);
+            return;
+        }
+        if open {
+            if tool.busy.is_some() {
+                ctx.request_repaint();
+            }
+            self.argon2 = Some(tool);
+        }
     }
 
     fn save_query_window(&mut self, ctx: &egui::Context) {

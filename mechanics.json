@@ -808,6 +808,36 @@
       "group": "connections",
       "value": "0x303",
       "source": "function 0x2ed35b0 (TLSv1_2_method)"
+    },
+    {
+      "name": "Argon2 tool default memory (KiB)",
+      "group": "tools",
+      "value": 19456,
+      "source": "BaseLens Argon2 tool (src/argon2tool.rs); defaults = argon2 crate Params::DEFAULT (OWASP baseline), same as the app-lock PIN hash"
+    },
+    {
+      "name": "Argon2 tool default passes",
+      "group": "tools",
+      "value": 2,
+      "source": "BaseLens Argon2 tool (src/argon2tool.rs); defaults = argon2 crate Params::DEFAULT (OWASP baseline), same as the app-lock PIN hash"
+    },
+    {
+      "name": "Argon2 tool default lanes",
+      "group": "tools",
+      "value": 1,
+      "source": "BaseLens Argon2 tool (src/argon2tool.rs); defaults = argon2 crate Params::DEFAULT (OWASP baseline), same as the app-lock PIN hash"
+    },
+    {
+      "name": "Argon2 tool default hash length (bytes)",
+      "group": "tools",
+      "value": 32,
+      "source": "BaseLens Argon2 tool (src/argon2tool.rs); defaults = argon2 crate Params::DEFAULT (OWASP baseline), same as the app-lock PIN hash"
+    },
+    {
+      "name": "Argon2 tool max memory (KiB)",
+      "group": "tools",
+      "value": 1048576,
+      "source": "BaseLens limit (1 GiB) so a typo can't exhaust memory"
     }
   ]
 }

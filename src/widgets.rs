@@ -261,6 +261,8 @@ pub struct GridOut {
     pub open_json: bool,
     /// quick filter picked from a cell or header: (column name, operator, value)
     pub filter: Option<(String, crate::filter::Op, String)>,
+    /// Argon2 tool asked from a cell: (hash to check, cell to fill)
+    pub argon2: Option<(Option<String>, Option<(usize, usize)>)>,
 }
 
 fn col_width(res: &QueryResult, c: usize) -> f32 {
@@ -484,6 +486,14 @@ pub fn grid(
                             }
                             if ui.button("Show in JSON inspector").clicked() {
                                 out.open_json = true;
+                                ui.close_menu();
+                            }
+                            if crate::argon2tool::looks_like_hash(&cell.display()) && ui.button("🔑  Check a password against this Argon2 hash…").clicked() {
+                                out.argon2 = Some((Some(cell.display()), None));
+                                ui.close_menu();
+                            }
+                            if editable && !deleted && ui.button("🔑  Put a new Argon2 hash here…").clicked() {
+                                out.argon2 = Some((None, Some((r, c))));
                                 ui.close_menu();
                             }
                             ui.separator();

@@ -798,6 +798,13 @@ impl App {
                 self.new_query_tab(sid, sql);
             }
             Action::ShowJson => self.settings.show_json = true,
+            Action::Argon2 { check, cell } => {
+                use crate::argon2tool::{Mode, Tool};
+                let mut t = Tool::new(if check.is_some() { Mode::Verify } else { Mode::Hash });
+                t.check_hash = check.unwrap_or_default();
+                t.target = cell.map(|(r, c)| (tid, r, c));
+                self.argon2 = Some(t);
+            }
             Action::Export(json) => {
                 let res = self.tabs.iter().find(|t| t.id == tid).and_then(|t| match &t.kind {
                     TabKind::Query(q) => q.results.get(q.active).cloned(),

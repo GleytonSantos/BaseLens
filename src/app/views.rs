@@ -50,6 +50,9 @@ fn result_body(
             if out.open_json {
                 actions.push(Action::ShowJson);
             }
+            if let Some((check, cell)) = out.argon2.clone() {
+                actions.push(Action::Argon2 { check, cell });
+            }
             out
         }
         View::Chart => {

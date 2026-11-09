@@ -463,6 +463,37 @@ impl App {
                     next(r);
                 }
             }
+            // 20: Ctrl+Shift+H opens the Argon2 tool; it makes a hash that checks
+            20 => {
+                if r.waited == 1 {
+                    self.argon2 = None;
+                    r.key(Key::H, Modifiers::COMMAND | Modifiers::SHIFT);
+                } else if r.waited == 4 {
+                    let opened = self.argon2.is_some();
+                    r.check(opened, "Ctrl+Shift+H opens the Argon2 tool");
+                    if let Some(t) = &mut self.argon2 {
+                        t.settings.mem_kib = 1024;
+                        t.settings.time = 1;
+                        t.text = "robot-secret".into();
+                        t.start();
+                    }
+                } else if r.waited > 4 {
+                    let out = self.argon2.as_ref().map(|t| (t.busy.is_none(), t.output.clone()));
+                    match out {
+                        Some((true, h)) if !h.is_empty() => {
+                            let ok = crate::argon2tool::verify("robot-secret", &h) == Ok(true);
+                            r.check(ok && h.starts_with("$argon2id$v=19$m=1024,t=1,p=1$"), "the Argon2 tool makes an Argon2id hash that checks out");
+                            self.argon2 = None;
+                            next(r);
+                        }
+                        None => {
+                            r.check(false, "the Argon2 tool stays open while working");
+                            next(r);
+                        }
+                        _ => {}
+                    }
+                }
+            }
             _ => r.done = true,
         }
     }

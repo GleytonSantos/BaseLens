@@ -348,3 +348,13 @@ Read with native_function_pseudocode:
 - The JavaScript side (Node's `tls.js`, embedded at 0x1b6f6e4; flags parsed by `EnvironmentOptionsParser` at 0x2dcc76d…0x2dcc7d0): with no `--tls-min-v1.x` flag, **`DEFAULT_MIN_VERSION = 'TLSv1.2'`** and `DEFAULT_MAX_VERSION = 'TLSv1.3'`.
 
 Used in the build: PostgreSQL TLS now sets `min_protocol_version(TLS 1.2)` (`TLS_MIN_VERSION`); the MySQL driver has no such option, so after connecting BaseLens reads `SHOW SESSION STATUS LIKE 'Ssl_version'` and refuses anything older than TLS 1.2 (or an unencrypted session when TLS was asked for). A server stuck on old TLS gets a clear message instead of "doesn't accept TLS". Checked live: a PostgreSQL limited to TLS 1.0–1.1 is refused with that message; the same server on its defaults connects. Test `tls_floor_is_tls12`.
+
+## Round 27 — Argon2 as a tool
+
+`src/argon2tool.rs` + window in `dialogs.rs`, opened with **Ctrl+Shift+H**, the command palette ("Argon2: make or check a password hash"), or a cell's right-click menu:
+
+- **Make a hash**: Argon2id (default), Argon2i or Argon2d; memory 8 KiB–1 GiB (default 19 456 KiB), passes 1–16 (2), lanes 1–16 (1), hash length 16–64 bytes (32) — the same defaults as the app-lock PIN (`argon2` crate defaults, OWASP baseline), version 0x13. A new random salt each time; output as a PHC string (`$argon2id$v=19$m=…,t=…,p=…$salt$hash`) with Copy, "Copy as SQL text" and, when opened from an editable cell, **Use in the cell** (puts it in the cell editor; Enter + Save writes it).
+- **Check a password**: paste a PHC hash (or right-click a cell holding one, "Check a password against this Argon2 hash…"); the tool shows its settings in plain words (e.g. "Argon2id · version 0x13 · 19 MiB · 2 passes · 1 lane · 32-byte hash") and says whether the password matches. Non-Argon2 hashes (bcrypt…) are refused with a clear message.
+- Work runs on a background thread (large memory settings never freeze the window); the typed text is cleared after each run and never saved.
+
+Tests `hashes_check_and_describe`, `refuses_what_is_not_argon2`; robot step 20 opens the tool with Ctrl+Shift+H and checks a real hash.

@@ -349,11 +349,13 @@ enum Cmd {
     Shortcuts,
     Lock,
     Ask,
+    Argon2,
 }
 
 impl Cmd {
-    const ALL: [Cmd; 31] = [
+    const ALL: [Cmd; 32] = [
         Cmd::Ask,
+        Cmd::Argon2,
         Cmd::NewQuery,
         Cmd::RunQuery,
         Cmd::RunCurrent,
@@ -418,6 +420,7 @@ impl Cmd {
             Cmd::Shortcuts => "Keyboard shortcuts",
             Cmd::Lock => "Lock the app",
             Cmd::Ask => "Ask Lens: is it in this table?",
+            Cmd::Argon2 => "Argon2: make or check a password hash",
         }
     }
     /// Shortcut text for this platform. Rule from the original's accelerator
@@ -467,6 +470,7 @@ impl Cmd {
             Cmd::Shortcuts => "F1",
             Cmd::Lock => "Ctrl+Shift+Q",
             Cmd::Ask => "Ctrl+Shift+K",
+            Cmd::Argon2 => "Ctrl+Shift+H",
         }
     }
 }
@@ -486,6 +490,8 @@ enum Action {
     /// sample the distinct values of (table, column) for suggestions
     FetchValues(String, String),
     Settings,
+    /// open the Argon2 tool: check this hash, or fill this cell (row, column)
+    Argon2 { check: Option<String>, cell: Option<(usize, usize)> },
 }
 
 pub struct App {
@@ -532,6 +538,8 @@ pub struct App {
     /// what the user wrote in queries, per saved connection id
     learned: HashMap<u64, assist::Learned>,
     show_shortcuts: bool,
+    /// Argon2 hash tool window (Ctrl+Shift+H)
+    pub(crate) argon2: Option<crate::argon2tool::Tool>,
     table_filter: String,
     json_filter: String,
     quick: Option<(String, usize)>,
@@ -702,6 +710,7 @@ impl App {
             values_jobs: Vec::new(),
             learned: load_learned(),
             show_shortcuts: false,
+            argon2: None,
             table_filter: String::new(),
             json_filter: String::new(),
             quick: None,
@@ -1672,6 +1681,7 @@ impl App {
             (cs, Key::J, Cmd::ExportJson),
             (cs, Key::L, Cmd::ToggleTheme),
             (cs, Key::Q, Cmd::Lock),
+            (cs, Key::H, Cmd::Argon2),
             (cs, Key::P, Cmd::Shortcuts),
             (cs, Key::K, Cmd::Ask),
             (alt_s, Key::Num5, Cmd::Ask),
@@ -1895,6 +1905,9 @@ impl App {
             }
             Cmd::Settings => self.open_settings(SettingsPage::General),
             Cmd::Shortcuts => self.show_shortcuts = !self.show_shortcuts,
+            Cmd::Argon2 => {
+                self.argon2 = if self.argon2.is_some() { None } else { Some(crate::argon2tool::Tool::new(crate::argon2tool::Mode::Hash)) };
+            }
             Cmd::Ask => {
                 self.side_tab = SideTab::Ask;
                 self.sidebar_open = true;
