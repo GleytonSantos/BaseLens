@@ -910,6 +910,30 @@
       "group": "connections",
       "value": 10,
       "source": "Node net.js embedded at 0x14db1af (autoSelectFamilyAttemptTimeout < 10 → 10)"
+    },
+    {
+      "name": "XLSX max rows written (incl. header)",
+      "group": "export",
+      "value": 1048576,
+      "source": "Excel worksheet limit (export.rs)"
+    },
+    {
+      "name": "XLSX max columns",
+      "group": "export",
+      "value": 16384,
+      "source": "Excel worksheet limit (export.rs)"
+    },
+    {
+      "name": "XLSX max characters per cell",
+      "group": "export",
+      "value": 32767,
+      "source": "Excel cell limit (export.rs)"
+    },
+    {
+      "name": "Plan step highlighted when own cost share above",
+      "group": "editor",
+      "value": 0.5,
+      "source": "BaseLens design (plan.rs)"
     }
   ]
 }

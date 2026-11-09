@@ -32,6 +32,9 @@ A free, private desktop editor for **SQLite**, **PostgreSQL** and **MySQL** — 
 | 🔑 **Argon2 / scrypt tool** | Make or check password hashes (Argon2id/i/d with adjustable memory, passes, lanes and length; scrypt with N, r, p) — `Ctrl+Shift+H`, or right-click a cell to check its hash or fill it with a new one. |
 | 🔐 **SSH tunnels** | Reach databases behind a bastion: BaseLens runs your system's `ssh` with your keys, ssh-agent and `~/.ssh/config`. |
 | ■ **Stop & time limit** | Stop a running query on the server (PostgreSQL cancel, MySQL `KILL QUERY`, SQLite interrupt), or let it stop after N seconds. |
+| 🧭 **Visual EXPLAIN** | See the query plan as a tree with cost, rows and a bar for each step's share; *Run and measure* adds real times (PostgreSQL JSON plans, MySQL 8 tree plans, SQLite query plans). |
+| ✔ **Manual transactions** | Turn auto-commit off per connection; changes wait for **Commit** or **Rollback**, with an "uncommitted" marker in the status bar. |
+| ⬇ **Export anywhere** | CSV, JSON, Excel (XLSX), SQL INSERT statements, Markdown, HTML and XML. |
 | 📊 **See your data** | Built-in JSON viewer, charts and an ER diagram. |
 | 🤖 **AI assistant** | Local (Ollama / any OpenAI-compatible server), cloud (Anthropic, OpenAI, Google), or the native Claude Code CLI. Read-only queries can run without asking. |
 | 🔐 **Private by default** | Passwords encrypted on your computer with the system keyring, optional PIN lock on idle, read-only connections, verified TLS. |
