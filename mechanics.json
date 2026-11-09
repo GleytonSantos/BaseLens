@@ -736,6 +736,24 @@
       "group": "debug",
       "value": 50,
       "source": "BaseLens design (db.rs / debug.rs), checked with test live_pg against PostgreSQL 17"
+    },
+    {
+      "name": "TCP keep-alive probe interval (s)",
+      "group": "connections",
+      "value": 1,
+      "source": "function 0x2a19260 (uv__tcp_keepalive) via 0x2a193b0 (uv_tcp_keepalive): setsockopt(IPPROTO_TCP, TCP_KEEPINTVL, 1)"
+    },
+    {
+      "name": "TCP keep-alive probe count",
+      "group": "connections",
+      "value": 10,
+      "source": "function 0x2a19260 (uv__tcp_keepalive) via 0x2a193b0 (uv_tcp_keepalive): setsockopt(IPPROTO_TCP, TCP_KEEPCNT, 10)"
+    },
+    {
+      "name": "TCP keep-alive idle before first probe (s)",
+      "group": "connections",
+      "value": 60,
+      "source": "BaseLens choice; libuv function 0x2a19260 (uv__tcp_keepalive) via 0x2a193b0 (uv_tcp_keepalive) refuses 0"
     }
   ]
 }

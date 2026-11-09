@@ -284,3 +284,13 @@ Read with native_function_pseudocode (symbols from the original's dynamic table)
 - `scripts/build-all.sh` builds in Docker (`packaging/docker`, Debian 12, so the binary needs only glibc 2.36): `.deb` (cargo-deb), `.rpm` (cargo-generate-rpm), AppImage (carries libssl/libcrypto 3), `.tar.gz`, Windows `.zip` (MinGW cross-build, icon put in the .exe by `build.rs`); then a Flatpak bundle (`dev.baselens.BaseLens`, runtime org.freedesktop.Platform 25.08) and the Arch package (`packaging/arch/PKGBUILD`).
 - macOS needs a Mac: `scripts/package-macos.sh` makes a universal (arm64 + x86_64, macOS 11+) `.app`, `.dmg` and `.zip`. `.github/workflows/release.yml` builds every package on GitHub (Linux, Flatpak, Arch, Windows native, macOS) and publishes them on tags `v*`.
 - Icons: `--export-brand` writes PNGs at 16, 24, 32, 48, 64, 128, 256 and 512 px and a PNG-based `.ico`; inside Flatpak the window's Wayland app id follows `FLATPAK_ID` so the desktop finds the icon.
+
+## Round 20 — decompiled: keep-alive probes, used on BaseLens connections
+
+Read with native_function_pseudocode:
+
+- **`uv_tcp_keepalive` 0x2a193b0**: with no socket yet (`fd == -1`) it only remembers the choice (flag bit 0x2000000 at handle+0x58); otherwise it calls `uv__tcp_keepalive` and sets the flag on success.
+- **`uv__tcp_keepalive` 0x2a19260** (read before, Round 18b): `SO_KEEPALIVE=on`, then refuses a zero delay (`-EINVAL`), `TCP_KEEPIDLE = delay`, **`TCP_KEEPINTVL = 1`**, **`TCP_KEEPCNT = 10`**.
+- The original's own Postgres settings (app.asar) never set `keepAlive`, so its node-postgres sockets have no probes; an idle connection behind a proxy or NAT can be dropped silently and the next query hangs until the OS gives up.
+
+Used in the build (`db.rs`): PostgreSQL and MySQL connections now turn keep-alive on with libuv's probe rule — 1 s between probes, 10 probes — after 60 s idle (`TCP_KEEPALIVE_IDLE_S`, a BaseLens choice, since libuv refuses 0). Checked on a live connection to a local PostgreSQL: `ss -tnoe` shows `timer:(keepalive,59sec,0)`.

@@ -10,6 +10,14 @@ pub const MYSQL_CONNECT_TIMEOUT_MS: u64 = 60000; // MECHANICS: [db.mysql] "1 min
 /// Rows asked from the server per round trip (first batch); later batches
 /// double up to PG_FETCH_MAX so big results don't need hundreds of trips.
 pub const PG_FETCH_BATCH: usize = 200;
+/// TCP keep-alive probes once a socket is on, as libuv sets them
+/// (uv__tcp_keepalive 0x2a19260): TCP_KEEPINTVL = 1 s, TCP_KEEPCNT = 10.
+pub const TCP_KEEPALIVE_INTERVAL_S: u64 = 1;
+pub const TCP_KEEPALIVE_COUNT: u32 = 10;
+/// Idle time before the first probe. libuv refuses 0 (-EINVAL), so a value is
+/// needed; 60 s keeps proxies (Cloud SQL Proxy, NAT) from dropping an idle
+/// connection without the person noticing. BaseLens choice.
+pub const TCP_KEEPALIVE_IDLE_S: u64 = 60;
 pub const PG_FETCH_MAX: usize = 6400;
 /// Tables whose columns are loaded one by one when a database can't list
 /// them all in one query (SQLite).
@@ -865,6 +873,10 @@ fn pg_connect(cfg: &ConnConfig, password: &str, user: &str, tls: bool) -> Result
         .port(cfg.port)
         .user(user)
         .connect_timeout(Duration::from_millis(PG_CONNECT_TIMEOUT_MS))
+        .keepalives(true)
+        .keepalives_idle(Duration::from_secs(TCP_KEEPALIVE_IDLE_S))
+        .keepalives_interval(Duration::from_secs(TCP_KEEPALIVE_INTERVAL_S))
+        .keepalives_retries(TCP_KEEPALIVE_COUNT)
         .application_name("baselens");
     if !password.is_empty() {
         pc.password(password);
@@ -1342,7 +1354,14 @@ fn open_mysql(cfg: &ConnConfig, password: &str) -> Result<My, String> {
         .ip_or_hostname(Some(cfg.host.clone()))
         .tcp_port(cfg.port)
         .user(Some(cfg.user.clone()))
-        .tcp_connect_timeout(Some(Duration::from_millis(MYSQL_CONNECT_TIMEOUT_MS)));
+        .tcp_connect_timeout(Some(Duration::from_millis(MYSQL_CONNECT_TIMEOUT_MS)))
+        .tcp_keepalive_time_ms(Some((TCP_KEEPALIVE_IDLE_S * 1000) as u32));
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        b = b
+        .tcp_keepalive_probe_interval_secs(Some(TCP_KEEPALIVE_INTERVAL_S as u32))
+        .tcp_keepalive_probe_count(Some(TCP_KEEPALIVE_COUNT));
+    }
     if !password.is_empty() {
         b = b.pass(Some(password.to_string()));
     }
