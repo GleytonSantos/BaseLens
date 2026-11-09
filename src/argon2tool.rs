@@ -24,9 +24,11 @@ pub const OUT_LEN_RANGE: (u32, u32) = (16, 64);
 pub const SCRYPT_DEFAULT_LOG_N: u8 = 14;
 pub const SCRYPT_DEFAULT_R: u32 = 8;
 pub const SCRYPT_DEFAULT_P: u32 = 1;
-pub const SCRYPT_DEFAULT_MAXMEM_MIB: u32 = 32;
+/// maxmem in bytes (`32 << 20`).
+pub const SCRYPT_DEFAULT_MAXMEM: u64 = 33554432;
+pub const SCRYPT_DEFAULT_MAXMEM_MIB: u32 = (SCRYPT_DEFAULT_MAXMEM / 1_048_576) as u32;
 /// BoringSSL's own limit when no maxmem is given (0x4100000 in 0x6d81b80).
-pub const SCRYPT_BORINGSSL_DEFAULT_MAXMEM: u64 = 0x410_0000;
+pub const SCRYPT_BORINGSSL_DEFAULT_MAXMEM: u64 = 68157440; // 0x4100000
 
 /// The original's scrypt parameter check (BoringSSL `EVP_PBE_scrypt`,
 /// 0x6d81b80, called from `ScryptTraits::AdditionalConfig` 0x2f02270 which
