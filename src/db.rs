@@ -328,6 +328,8 @@ pub struct Timing {
     pub batches: usize,
     /// Requests still waiting on the queue when this one started.
     pub queue_behind: usize,
+    /// a transaction is open on the connection after this query
+    pub in_tx: bool,
 }
 
 /// Where the time of opening a connection went (debug mode only measures
@@ -379,6 +381,9 @@ pub enum Request {
     AllColumns,
     Query { tag: u64, sql: String, max_rows: usize, sent: Instant },
     Graph { tag: u64 },
+    /// manual transactions on/off (auto-commit off = every change waits for
+    /// Commit or Rollback)
+    SetManualCommit(bool),
 }
 
 impl Request {
@@ -397,6 +402,8 @@ pub enum Response {
     AllColumns(Result<Vec<(String, Vec<ColumnInfo>)>, String>),
     QueryDone { tag: u64, results: Result<Vec<QueryResult>, String>, timing: Timing },
     Graph { tag: u64, tables: Vec<(String, Vec<ColumnInfo>)>, fks: Vec<ForeignKey> },
+    /// manual-commit mode and whether a transaction is open now
+    TxState { manual: bool, open: bool, error: Option<String> },
 }
 
 trait Backend {
@@ -410,6 +417,15 @@ trait Backend {
     /// How to stop a running query from another thread.
     fn canceller(&self) -> Option<Canceller> {
         None
+    }
+    /// Manual transactions: when on, the first statement after a COMMIT or
+    /// ROLLBACK opens a transaction that stays open until the next one.
+    fn set_manual_commit(&mut self, _on: bool) -> Result<(), String> {
+        Err("Manual transactions aren't available for this database.".into())
+    }
+    /// A transaction is open right now.
+    fn in_transaction(&mut self) -> bool {
+        false
     }
     /// Columns of every table, keyed like TableInfo::key. Default: one
     /// question per table (fine for local SQLite files).
@@ -652,11 +668,17 @@ pub fn spawn(cfg: ConnConfig, password: String) -> Handle {
             let behind = q.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
             match req {
                 Request::Refresh => send_tables(&mut b),
+                Request::SetManualCommit(on) => {
+                    let error = b.set_manual_commit(on).err();
+                    let open = b.in_transaction();
+                    let _ = tx_res.send(Response::TxState { manual: on && error.is_none(), open, error });
+                }
                 Request::Query { tag, sql, max_rows, sent } => {
                     let queue_ms = sent.elapsed().as_secs_f64() * 1000.0;
                     let t = Instant::now();
                     let results = b.run(&sql, max_rows);
                     let mut timing = Timing { queue_ms, run_ms: t.elapsed().as_secs_f64() * 1000.0, queue_behind: behind, ..Default::default() };
+                    timing.in_tx = b.in_transaction();
                     if let Ok(r) = &results {
                         timing.rows = r.iter().map(|x| x.rows.len()).sum();
                         timing.batches = r.iter().map(|x| x.batches).sum();
@@ -869,6 +891,7 @@ pub fn is_safe_auto_query(sql: &str) -> bool {
 struct Sqlite {
     c: rusqlite::Connection,
     path: String,
+    manual: bool,
 }
 
 fn open_sqlite(cfg: &ConnConfig) -> Result<Sqlite, String> {
@@ -886,7 +909,7 @@ fn open_sqlite(cfg: &ConnConfig) -> Result<Sqlite, String> {
     let _ = c.busy_timeout(Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS));
     // Loading native extensions stays off (MECHANICS: allowRuntimeExtensions = false).
     let _ = c.execute_batch("PRAGMA foreign_keys = ON;");
-    Ok(Sqlite { c, path: cfg.path.clone() })
+    Ok(Sqlite { c, path: cfg.path.clone(), manual: false })
 }
 
 impl Backend for Sqlite {
@@ -959,8 +982,21 @@ impl Backend for Sqlite {
         }
         out
     }
+    fn set_manual_commit(&mut self, on: bool) -> Result<(), String> {
+        if !on && !self.c.is_autocommit() {
+            return Err("Commit or roll back the open transaction first.".into());
+        }
+        self.manual = on;
+        Ok(())
+    }
+    fn in_transaction(&mut self) -> bool {
+        !self.c.is_autocommit()
+    }
     fn run(&mut self, sql: &str, max_rows: usize) -> Result<Vec<QueryResult>, String> {
         use rusqlite::types::ValueRef;
+        if self.manual && self.c.is_autocommit() && !split_statements(sql).iter().all(|s| tx_effect(s).is_some()) {
+            self.c.execute_batch("BEGIN").map_err(|e| e.to_string())?;
+        }
         let mut out = Vec::new();
         for stmt_sql in split_statements(sql) {
             let t0 = Instant::now();
@@ -1006,6 +1042,8 @@ struct Pg {
     read_only: bool,
     /// The person opened a transaction (BEGIN) that is still going.
     in_tx: bool,
+    /// manual transactions: BEGIN before the first statement after a COMMIT/ROLLBACK
+    manual: bool,
 }
 
 /// User to log in with: the typed one, else the operating-system user
@@ -1104,6 +1142,15 @@ pub fn pg_error_text(e: &postgres::Error) -> String {
     s
 }
 
+/// A query error with a hint for the cases that need the person to act.
+pub fn pg_query_error(e: &postgres::Error) -> String {
+    let t = pg_error_text(e);
+    match e.as_db_error().map(|d| d.code().code()) {
+        Some("25P02") => format!("{t}\n\nAn earlier statement in this transaction failed, so PostgreSQL ignores the rest until it ends. Press Rollback (or run ROLLBACK) to continue."),
+        _ => t,
+    }
+}
+
 /// A plain-language next step for common connection failures.
 pub fn pg_advice(e: &postgres::Error, cfg: &ConnConfig, user: &str) -> Option<String> {
     let port = cfg.port;
@@ -1121,6 +1168,7 @@ pub fn pg_advice(e: &postgres::Error, cfg: &ConnConfig, user: &str) -> Option<St
                 }
             }
             "53300" => "The server has too many open connections right now. Close some, or try again later.".into(),
+            "25P02" => "An earlier statement in this transaction failed, so PostgreSQL ignores the rest until it ends. Press Rollback (or run ROLLBACK) to continue.".into(),
             "57P03" => "The server is starting up or shutting down. Try again in a moment.".into(),
             _ => return None,
         });
@@ -1250,7 +1298,7 @@ fn open_pg(cfg: &ConnConfig, password: &str) -> Result<Pg, String> {
     if cfg.read_only {
         let _ = c.batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY");
     }
-    Ok(Pg { c, tls, read_only: cfg.read_only, in_tx: false })
+    Ok(Pg { c, tls, read_only: cfg.read_only, in_tx: false, manual: false })
 }
 
 
@@ -1482,7 +1530,7 @@ impl Pg {
         // as real values instead of text. Inside the person's own
         // transaction, or for statements that can't be described (with $1
         // parameters), values stay text.
-        let types: Vec<postgres::types::Type> = if own_tx {
+        let types: Vec<postgres::types::Type> = if own_tx || !stmt.contains('$') {
             self.c.prepare(stmt).map(|st| st.columns().iter().map(|c| c.type_().clone()).collect()).unwrap_or_default()
         } else {
             Vec::new()
@@ -1503,7 +1551,7 @@ impl Pg {
             let want = if left == 0 { 1 } else { batch.min(left) };
             let msgs = match self.c.simple_query(&format!("FETCH {want} FROM {CUR}")) {
                 Ok(m) => m,
-                Err(e) => break Err(pg_error_text(&e)),
+                Err(e) => break Err(pg_query_error(&e)),
             };
             res.batches += 1;
             let mut got = 0;
@@ -1677,10 +1725,25 @@ impl Backend for Pg {
         }
         Ok(out)
     }
+    fn set_manual_commit(&mut self, on: bool) -> Result<(), String> {
+        if !on && self.in_tx {
+            return Err("Commit or roll back the open transaction first.".into());
+        }
+        self.manual = on;
+        Ok(())
+    }
+    fn in_transaction(&mut self) -> bool {
+        self.in_tx
+    }
     fn run(&mut self, sql: &str, max_rows: usize) -> Result<Vec<QueryResult>, String> {
         use postgres::SimpleQueryMessage as M;
         let t0 = Instant::now();
         let stmts = split_statements(sql);
+        // manual transactions: open one before anything but COMMIT/ROLLBACK/BEGIN
+        if self.manual && !self.in_tx && !stmts.iter().all(|s| tx_effect(s).is_some()) {
+            self.c.batch_execute("BEGIN").map_err(|e| pg_error_text(&e))?;
+            self.in_tx = true;
+        }
         if stmts.len() == 1 && cursor_friendly(&stmts[0]) {
             return self.run_batched(&stmts[0], max_rows);
         }
@@ -1689,7 +1752,7 @@ impl Backend for Pg {
                 self.in_tx = open;
             }
         }
-        let msgs = self.c.simple_query(sql).map_err(|e| pg_error_text(&e))?;
+        let msgs = self.c.simple_query(sql).map_err(|e| pg_query_error(&e))?;
         let mut out = Vec::new();
         let mut cur: Option<QueryResult> = None;
         for m in msgs {
@@ -1747,6 +1810,9 @@ struct My {
     read_only: bool,
     /// to open the second connection that stops a running query
     opts: mysql::Opts,
+    manual: bool,
+    /// a statement ran since the last COMMIT/ROLLBACK while manual
+    in_tx: bool,
 }
 
 fn open_mysql(cfg: &ConnConfig, password: &str) -> Result<My, String> {
@@ -1803,7 +1869,7 @@ fn open_mysql(cfg: &ConnConfig, password: &str) -> Result<My, String> {
     if cfg.read_only {
         let _ = c.query_drop("SET SESSION TRANSACTION READ ONLY");
     }
-    Ok(My { c, read_only: cfg.read_only, opts })
+    Ok(My { c, read_only: cfg.read_only, opts, manual: false, in_tx: false })
 }
 
 fn my_cell(v: mysql::Value) -> Cell {
@@ -1918,8 +1984,25 @@ impl Backend for My {
         .map(|r| ForeignKey { from_table: r[0].clone(), from_col: r[1].clone(), to_table: r[2].clone(), to_col: r[3].clone() })
         .collect()
     }
+    fn set_manual_commit(&mut self, on: bool) -> Result<(), String> {
+        use mysql::prelude::Queryable;
+        if !on && self.in_tx {
+            return Err("Commit or roll back the open transaction first.".into());
+        }
+        self.c.query_drop(if on { "SET autocommit = 0" } else { "SET autocommit = 1" }).map_err(|e| e.to_string())?;
+        self.manual = on;
+        Ok(())
+    }
+    fn in_transaction(&mut self) -> bool {
+        self.manual && self.in_tx
+    }
     fn run(&mut self, sql: &str, max_rows: usize) -> Result<Vec<QueryResult>, String> {
         use mysql::prelude::Queryable;
+        if self.manual {
+            for s in split_statements(sql) {
+                self.in_tx = tx_effect(&s).unwrap_or(true);
+            }
+        }
         let mut out = Vec::new();
         for stmt in split_statements(sql) {
             let t0 = Instant::now();

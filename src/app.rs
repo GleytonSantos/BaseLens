@@ -116,6 +116,9 @@ struct OpenConn {
     instance: usize,
     /// The one "all columns" question was sent for this table list.
     cols_asked: bool,
+    /// manual transactions (auto-commit off) and whether one is open
+    manual_tx: bool,
+    tx_open: bool,
 }
 
 impl OpenConn {
@@ -157,6 +160,8 @@ struct QueryTab {
     /// the person, or by the time limit)
     started: Option<Instant>,
     stop_asked: Option<StopReason>,
+    /// visual EXPLAIN shown instead of the results
+    plan: Option<Result<crate::plan::PlanNode, String>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -245,6 +250,10 @@ enum Purpose {
     AskData(usize, usize),
     /// value sampling for suggestions: index into `values_jobs`
     Values(usize),
+    /// visual EXPLAIN for a query tab
+    Explain(u64),
+    /// COMMIT / ROLLBACK from the buttons (true = commit)
+    EndTx(bool),
 }
 
 struct ConnEditor {
@@ -499,7 +508,7 @@ enum Action {
     AiRun(usize, String),
     OpenInEditor(String),
     ShowJson,
-    Export(bool),
+    Export(crate::export::Format),
     AddRow,
     ReloadEr,
     /// sample the distinct values of (table, column) for suggestions
@@ -507,6 +516,12 @@ enum Action {
     Settings,
     /// stop the query running in this tab
     StopQuery,
+    /// show the query plan (true = ANALYZE: runs the query)
+    Explain(bool),
+    /// turn manual transactions on/off for this tab's connection
+    SetManualCommit(bool),
+    /// end the open transaction: true = COMMIT, false = ROLLBACK
+    EndTx(bool),
     /// open the Argon2 tool: check this hash, or fill this cell (row, column)
     Argon2 { check: Option<String>, cell: Option<(usize, usize)> },
 }
@@ -853,6 +868,8 @@ impl App {
             columns: HashMap::new(),
             instance,
             cols_asked: false,
+            manual_tx: false,
+            tx_open: false,
         });
         self.active_conn = Some(sid);
         sid
@@ -872,6 +889,8 @@ impl App {
         o.tables.clear();
         o.columns.clear();
         o.cols_asked = false;
+        o.manual_tx = false;
+        o.tx_open = false;
     }
 
     fn close_conn(&mut self, sid: u64) {
@@ -1037,6 +1056,16 @@ impl App {
                     self.load_table(id);
                 }
             }
+            Response::TxState { manual, open, error } => {
+                if let Some(o) = self.open.iter_mut().find(|o| o.sid == sid) {
+                    o.manual_tx = manual;
+                    o.tx_open = open;
+                }
+                match error {
+                    Some(e) => self.toast(e, false),
+                    None => self.toast(if manual { "Manual transactions: changes wait for Commit or Rollback." } else { "Auto-commit is back on." }, true),
+                }
+            }
             Response::AllColumns(res) => match res {
                 Ok(all) => {
                     let keys: std::collections::HashSet<String> = all.iter().map(|(k, _)| k.clone()).collect();
@@ -1081,6 +1110,9 @@ impl App {
             }
             Response::QueryDone { tag, results, timing } => {
                 let sql = self.dbg_sql.remove(&tag);
+                if let Some(o) = self.open.iter_mut().find(|o| o.sid == sid) {
+                    o.tx_open = timing.in_tx;
+                }
                 let Some(purpose) = self.pending.remove(&tag) else {
                     if let Err(e) = results {
                         self.toast(e, false);
@@ -1114,6 +1146,27 @@ impl App {
     fn on_query_done(&mut self, sid: u64, purpose: Purpose, results: Result<Vec<QueryResult>, String>) {
         let conn_name = self.conn(sid).map(|o| o.label()).unwrap_or_default();
         match purpose {
+            Purpose::EndTx(commit) => match results {
+                Ok(_) => self.toast(if commit { "Committed." } else { "Rolled back." }, true),
+                Err(e) => self.toast(format!("{} failed: {e}", if commit { "Commit" } else { "Rollback" }), false),
+            },
+            Purpose::Explain(tid) => {
+                let kind = self.conn(sid).map(|o| o.cfg.kind).unwrap_or(db::DbKind::Sqlite);
+                if let Some(t) = self.tab_mut(tid) {
+                    if let TabKind::Query(q) = &mut t.kind {
+                        q.running = false;
+                        q.started = None;
+                        q.stop_asked = None;
+                        q.plan = Some(match results {
+                            Ok(r) => match r.iter().rev().find(|x| !x.columns.is_empty()) {
+                                Some(x) => crate::plan::parse(kind, x),
+                                None => Err("The database returned no plan.".into()),
+                            },
+                            Err(e) => Err(e),
+                        });
+                    }
+                }
+            }
             Purpose::Query(tid) => {
                 let mut hist = None;
                 let mut learn: Option<(String, Vec<String>)> = None;
@@ -1157,7 +1210,9 @@ impl App {
                         store::save("history.json", &self.history);
                     }
                 }
-                if let Some(o) = self.conn(sid) {
+                // refresh the table list, but not inside an open transaction
+                // (an error there would abort it)
+                if let Some(o) = self.conn(sid).filter(|o| !o.tx_open) {
                     let _ = o.handle.send(Request::Refresh);
                 }
             }
@@ -1454,6 +1509,41 @@ impl App {
         }
     }
 
+    /// Visual EXPLAIN of the selection, or the statement under the cursor.
+    pub(super) fn explain_query_tab(&mut self, tid: u64, analyze: bool) {
+        let max = self.settings.max_results;
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == tid) else { return };
+        let sid = t.conn;
+        let TabKind::Query(q) = &mut t.kind else { return };
+        let (a, b) = (q.cursor.0.min(q.cursor.1), q.cursor.0.max(q.cursor.1));
+        let chars: Vec<char> = q.sql.chars().collect();
+        let sql: String = if a != b && b <= chars.len() { chars[a..b].iter().collect() } else { statement_at(&q.sql, a) };
+        if sql.trim().is_empty() {
+            return;
+        }
+        // ANALYZE really runs the query: only for queries that just read
+        if analyze && !db::is_read_query(&sql) {
+            self.toast("EXPLAIN ANALYZE runs the query, so it's only offered for queries that just read data.", false);
+            return;
+        }
+        let kind = self.open.iter().find(|o| o.sid == sid).map(|o| o.cfg.kind).unwrap_or(db::DbKind::Sqlite);
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == tid) else { return };
+        let TabKind::Query(q) = &mut t.kind else { return };
+        q.running = true;
+        q.error = None;
+        q.started = Some(Instant::now());
+        q.stop_asked = None;
+        let ex = crate::plan::explain_sql(kind, &sql, analyze);
+        if let Err(e) = self.send(sid, ex, Purpose::Explain(tid), max) {
+            if let Some(t) = self.tab_mut(tid) {
+                if let TabKind::Query(q) = &mut t.kind {
+                    q.running = false;
+                    q.plan = Some(Err(e));
+                }
+            }
+        }
+    }
+
     fn run_query_tab(&mut self, tid: u64, current_only: bool) {
         let max = self.settings.max_results;
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == tid) else { return };
@@ -1473,6 +1563,7 @@ impl App {
         }
         q.running = true;
         q.error = None;
+        q.plan = None;
         q.started = Some(Instant::now());
         q.stop_asked = None;
         if let Err(e) = self.send(sid, sql, Purpose::Query(tid), max) {
@@ -1921,7 +2012,7 @@ impl App {
             }
             Cmd::ExportCsv | Cmd::ExportJson => {
                 if let (Some(id), Some(s)) = (active, sid) {
-                    self.do_action(id, s, Action::Export(c == Cmd::ExportJson));
+                    self.do_action(id, s, Action::Export(if c == Cmd::ExportJson { crate::export::Format::Json } else { crate::export::Format::Csv }));
                 }
             }
             Cmd::CloseTab => {

@@ -327,6 +327,12 @@ impl App {
                         if let Some(v) = o.cfg.via_label() {
                             ui.label(RichText::new(format!("🔐 {v}")).small().color(p.text_light));
                         }
+                        if o.tx_open {
+                            ui.label(RichText::new("● uncommitted transaction").small().strong().color(p.warning))
+                                .on_hover_text("Changes on this connection wait for Commit or Rollback. Closing the connection rolls them back.");
+                        } else if o.manual_tx {
+                            ui.label(RichText::new("manual commit").small().color(p.text_light));
+                        }
                         if !o.current_db.is_empty() {
                             ui.label(RichText::new(format!("db {}", o.current_db)).small().color(p.text_light));
                         }
@@ -744,6 +750,7 @@ impl App {
             }
             _ => HashMap::new(),
         };
+        let tx = self.conn(sid).map(|o| (o.manual_tx, o.tx_open)).unwrap_or((false, false));
         let tab = &mut self.tabs[idx];
         egui::Frame::new()
             .fill(p.panel_alt)
@@ -757,7 +764,7 @@ impl App {
                     ui.vertical_centered(|ui| ui.label(RichText::new(msg).color(p.text_light).size(15.0)));
                 }
                 match &mut tab.kind {
-                    TabKind::Query(q) => query_view(ui, q, id, &p, &mut actions, &schema),
+                    TabKind::Query(q) => query_view(ui, q, id, &p, &mut actions, &schema, tx),
                     TabKind::Table(tt) => table_view(ui, tt, id, &p, &mut actions, page_size, read_only, &table_vals),
                     TabKind::Ai(a) => ai_view(ui, a, id, &p, &mut actions, &ai_settings),
                     TabKind::Er(er) => {
@@ -802,6 +809,15 @@ impl App {
             }
             Action::ShowJson => self.settings.show_json = true,
             Action::StopQuery => self.stop_query(tid, StopReason::Person),
+            Action::Explain(analyze) => self.explain_query_tab(tid, analyze),
+            Action::SetManualCommit(on) => {
+                if let Some(o) = self.conn(sid) {
+                    let _ = o.handle.send(Request::SetManualCommit(on));
+                }
+            }
+            Action::EndTx(commit) => {
+                let _ = self.send(sid, if commit { "COMMIT".into() } else { "ROLLBACK".into() }, Purpose::EndTx(commit), 10);
+            }
             Action::Argon2 { check, cell } => {
                 use crate::argon2tool::{Mode, Tool};
                 let mut t = Tool::new(if check.is_some() { Mode::Verify } else { Mode::Hash });
@@ -809,14 +825,18 @@ impl App {
                 t.target = cell.map(|(r, c)| (tid, r, c));
                 self.argon2 = Some(t);
             }
-            Action::Export(json) => {
+            Action::Export(fmt) => {
                 let res = self.tabs.iter().find(|t| t.id == tid).and_then(|t| match &t.kind {
-                    TabKind::Query(q) => q.results.get(q.active).cloned(),
-                    TabKind::Table(tt) => tt.data.clone(),
+                    TabKind::Query(q) => q.results.get(q.active).cloned().map(|r| (r, "result".to_string())),
+                    TabKind::Table(tt) => tt.data.clone().map(|r| (r, match &tt.schema {
+                        Some(s) => format!("{s}.{}", tt.table),
+                        None => tt.table.clone(),
+                    })),
                     _ => None,
                 });
-                if let Some(r) = res {
-                    self.export(&r, json);
+                let kind = self.conn(sid).map(|o| o.cfg.kind).unwrap_or(crate::db::DbKind::Sqlite);
+                if let Some((r, table)) = res {
+                    self.export(&r, fmt, &table, kind);
                 }
             }
             Action::AddRow => {
@@ -840,23 +860,13 @@ impl App {
         }
     }
 
-    fn export(&mut self, r: &QueryResult, json: bool) {
-        let name = if json { "result.json" } else { "result.csv" };
-        let picked = if store::robot_mode() { Some(store::data_dir().join(name)) } else { rfd::FileDialog::new().set_file_name(name).save_file() };
+    fn export(&mut self, r: &QueryResult, fmt: crate::export::Format, table: &str, kind: crate::db::DbKind) {
+        let base = table.rsplit('.').next().unwrap_or("result");
+        let name = format!("{base}.{}", fmt.ext());
+        let picked = if store::robot_mode() { Some(store::data_dir().join(&name)) } else { rfd::FileDialog::new().set_file_name(&name).save_file() };
         let Some(path) = picked else { return };
-        let body = if json {
-            serde_json::to_string_pretty(&widgets::result_json(r, usize::MAX)).unwrap_or_default()
-        } else {
-            let esc = |s: String| if s.contains([',', '"', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s };
-            let mut out = r.columns.iter().cloned().map(esc).collect::<Vec<_>>().join(",") + "\n";
-            for row in &r.rows {
-                out.push_str(&row.iter().map(|c| if c.is_null() { String::new() } else { esc(c.display()) }).collect::<Vec<_>>().join(","));
-                out.push('\n');
-            }
-            out
-        };
-        match std::fs::write(&path, body) {
-            Ok(_) => self.toast(format!("Exported to {}", path.display()), true),
+        match crate::export::render(r, fmt, table, kind).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string())) {
+            Ok(_) => self.toast(format!("Exported {} rows to {}", r.rows.len(), path.display()), true),
             Err(e) => self.toast(format!("Export failed: {e}"), false),
         }
     }

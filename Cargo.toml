@@ -28,6 +28,7 @@ rand = "0.8"
 base64 = "0.22"
 sha2 = "0.10"
 argon2 = "0.5"
+rust_xlsxwriter = { version = "0.80", default-features = false }
 scrypt = { version = "0.11", default-features = false, features = ["simple", "std"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.15"

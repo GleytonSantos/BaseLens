@@ -260,6 +260,15 @@ fn live_pg() {
     // and the connection still works afterwards
     let (r, _) = run("select 1", 10);
     assert!(r.is_ok());
+    // visual EXPLAIN, with and without ANALYZE
+    let (r, _) = run(&crate::plan::explain_sql(DbKind::Postgres, "select * from orders o join items i on i.order_id = o.id where o.total > 1", false), 10);
+    let n = crate::plan::parse(DbKind::Postgres, &r.unwrap()[0]).unwrap();
+    assert!(n.cost.unwrap() > 0.0 && n.count() >= 3, "{n:?}");
+    let (r, _) = run(&crate::plan::explain_sql(DbKind::Postgres, "select count(*) from big", true), 10);
+    let n = crate::plan::parse(DbKind::Postgres, &r.unwrap()[0]).unwrap();
+    assert!(n.actual_ms.is_some(), "{n:?}");
+    // manual transactions: rollback undoes, commit keeps
+    tx_roundtrip(&h);
 }
 
 /// SQLite's default busy handler, as read in the original (0x685df20):
@@ -459,4 +468,90 @@ fn address_order_follows_node() {
     assert_eq!(AUTOSELECT_ATTEMPT_MS, 250);
     // literals and single addresses are left to the driver
     assert_eq!(autoselect_address("127.0.0.1", 1), None);
+}
+
+#[test]
+fn sqlite_plan_from_a_real_database() {
+    use std::time::Instant;
+    let cfg = ConnConfig { kind: DbKind::Sqlite, path: ":memory:".into(), ..Default::default() };
+    let h = spawn(cfg, String::new());
+    assert!(matches!(h.rx.recv().unwrap(), Response::Connected { .. }));
+    let _ = h.rx.recv().unwrap();
+    let setup = "CREATE TABLE c(id INTEGER PRIMARY KEY, name TEXT); CREATE TABLE o(id INTEGER PRIMARY KEY, c_id INT, total REAL)";
+    assert!(h.send(Request::Query { tag: 1, sql: setup.into(), max_rows: 10, sent: Instant::now() }));
+    let _ = h.rx.recv().unwrap();
+    let q = crate::plan::explain_sql(DbKind::Sqlite, "SELECT * FROM o JOIN c ON c.id = o.c_id ORDER BY o.total", false);
+    assert!(h.send(Request::Query { tag: 2, sql: q, max_rows: 100, sent: Instant::now() }));
+    match h.rx.recv().unwrap() {
+        Response::QueryDone { results, .. } => {
+            let r = results.unwrap();
+            let n = crate::plan::parse(DbKind::Sqlite, &r[0]).unwrap();
+            assert!(n.count() >= 3, "{n:?}");
+            let labels: Vec<String> = n.children.iter().map(|c| c.label.clone()).collect();
+            assert!(labels.iter().any(|l| l == "SCAN") && labels.iter().any(|l| l == "SEARCH"), "{labels:?}");
+        }
+        _ => panic!(),
+    }
+}
+
+fn tx_roundtrip(h: &Handle) {
+    use std::time::{Duration, Instant};
+    let wait = Duration::from_secs(30);
+    let run = |sql: &str| -> (Result<Vec<QueryResult>, String>, bool) {
+        assert!(h.send(Request::Query { tag: 1, sql: sql.into(), max_rows: 100, sent: Instant::now() }));
+        loop {
+            if let Response::QueryDone { results, timing, .. } = h.rx.recv_timeout(wait).unwrap() {
+                return (results, timing.in_tx);
+            }
+        }
+    };
+    let count = |run: &dyn Fn(&str) -> (Result<Vec<QueryResult>, String>, bool)| run("SELECT count(*) FROM txt").0.unwrap()[0].rows[0][0].display();
+    run("CREATE TABLE IF NOT EXISTS txt(x int)").0.unwrap();
+    run("DELETE FROM txt").0.unwrap();
+    assert!(h.send(Request::SetManualCommit(true)));
+    loop {
+        if let Response::TxState { manual, open, error } = h.rx.recv_timeout(wait).unwrap() {
+            assert!(manual && !open && error.is_none());
+            break;
+        }
+    }
+    let (r, open) = run("INSERT INTO txt VALUES (1)");
+    r.unwrap();
+    assert!(open, "a transaction is open after a change");
+    assert_eq!(count(&run), "1");
+    let (r, open) = run("ROLLBACK");
+    r.unwrap();
+    assert!(!open);
+    assert_eq!(count(&run), "0", "rolled back");
+    run("INSERT INTO txt VALUES (2)").0.unwrap();
+    // turning auto-commit back on is refused while a transaction is open
+    assert!(h.send(Request::SetManualCommit(false)));
+    loop {
+        if let Response::TxState { manual: _, open, error } = h.rx.recv_timeout(wait).unwrap() {
+            assert!(open && error.is_some());
+            break;
+        }
+    }
+    let (_, open) = run("COMMIT");
+    assert!(!open);
+    assert!(h.send(Request::SetManualCommit(false)));
+    loop {
+        if let Response::TxState { manual, error, .. } = h.rx.recv_timeout(wait).unwrap() {
+            assert!(!manual && error.is_none());
+            break;
+        }
+    }
+    assert_eq!(count(&run), "1", "committed");
+    run("DROP TABLE txt").0.unwrap();
+}
+
+#[test]
+fn sqlite_manual_transactions() {
+    let dir = std::env::temp_dir().join(format!("baselens-tx-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = ConnConfig { kind: DbKind::Sqlite, path: dir.join("tx.sqlite").to_string_lossy().into(), ..Default::default() };
+    let h = spawn(cfg, String::new());
+    assert!(matches!(h.rx.recv().unwrap(), Response::Connected { .. }));
+    let _ = h.rx.recv().unwrap();
+    tx_roundtrip(&h);
 }

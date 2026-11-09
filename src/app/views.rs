@@ -71,6 +71,17 @@ fn result_body(
     }
 }
 
+/// Every export format, with its shortcut where it has one.
+fn export_menu(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    for f in crate::export::Format::ALL {
+        let label = if f.shortcut().is_empty() { f.label().to_string() } else { format!("{}   {}", f.label(), f.shortcut()) };
+        if ui.button(label).clicked() {
+            actions.push(Action::Export(f));
+            ui.close_menu();
+        }
+    }
+}
+
 fn primary_button(p: &Palette, text: &str) -> egui::Button<'static> {
     egui::Button::new(RichText::new(text.to_string()).strong().color(p.on_primary)).fill(p.primary).corner_radius(8)
 }
@@ -120,7 +131,7 @@ fn kind_color(p: &Palette, k: SugKind) -> Color32 {
     }
 }
 
-pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palette, actions: &mut Vec<Action>, schema: &SchemaInfo) {
+pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palette, actions: &mut Vec<Action>, schema: &SchemaInfo, tx: (bool, bool)) {
     let ed_id = egui::Id::new(("sqled", id));
     let ctx = ui.ctx().clone();
     ui.horizontal(|ui| {
@@ -130,6 +141,33 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
         if ui.add(ghost_button(p, "Run current")).on_hover_text("Run the statement under the cursor  (Ctrl+Shift+Enter)").clicked() {
             actions.push(Action::Run(true));
         }
+        // manual transactions (auto-commit off), per connection
+        let (manual, open) = tx;
+        let mut auto = !manual;
+        if ui.checkbox(&mut auto, "Auto-commit").on_hover_text("Off: changes stay in a transaction until you press Commit or Rollback").changed() {
+            actions.push(Action::SetManualCommit(!auto));
+        }
+        if manual {
+            if open {
+                ui.label(RichText::new("● transaction open").small().color(p.warning));
+            }
+            if ui.add_enabled(open, egui::Button::new(RichText::new("✔ Commit").color(p.on_primary)).fill(p.success)).clicked() {
+                actions.push(Action::EndTx(true));
+            }
+            if ui.add_enabled(open, ghost_button(p, "↶ Rollback")).clicked() {
+                actions.push(Action::EndTx(false));
+            }
+        }
+        ui.menu_button("🧭 Explain", |ui| {
+            if ui.button("Show the plan").on_hover_text("How the database would run the statement under the cursor (or the selection). Nothing is run.").clicked() {
+                actions.push(Action::Explain(false));
+                ui.close_menu();
+            }
+            if ui.button("Run and measure (ANALYZE)").on_hover_text("Really runs the query to show real times and rows. Only for queries that read.").clicked() {
+                actions.push(Action::Explain(true));
+                ui.close_menu();
+            }
+        });
         ui.add_space(6.0);
         if ui.add(ghost_button(p, "✨ Format")).on_hover_text("Tidy up the SQL  (Ctrl+Shift+F)").clicked() {
             q.editor_op = Some(EditorOp::Format);
@@ -151,16 +189,7 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.menu_button("⬇ Export", |ui| {
-                if ui.button("CSV   Ctrl+E").clicked() {
-                    actions.push(Action::Export(false));
-                    ui.close_menu();
-                }
-                if ui.button("JSON  Ctrl+Shift+J").clicked() {
-                    actions.push(Action::Export(true));
-                    ui.close_menu();
-                }
-            });
+            ui.menu_button("⬇ Export", |ui| export_menu(ui, actions));
         });
     });
     ui.add_space(6.0);
@@ -361,6 +390,28 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
     }
     if hresp.dragged() && total_h > 0.0 {
         q.split = ((ed_h + hresp.drag_delta().y) / total_h).clamp(0.12, 0.85);
+    }
+    if q.plan.is_some() {
+        let mut close = false;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("🧭 Query plan").strong().color(p.text_dark));
+            if ui.add(ghost_button(p, "✕ Back to results")).clicked() {
+                close = true;
+            }
+        });
+        match q.plan.as_ref().unwrap() {
+            Ok(n) => crate::plan::show(ui, n, p, id),
+            Err(e) => {
+                egui::Frame::new().fill(theme::mix(p.panel_alt, p.danger, 0.14)).corner_radius(8).inner_margin(10).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(format!("⚠  {e}")).color(p.danger));
+                });
+            }
+        }
+        if close {
+            q.plan = None;
+        }
+        return;
     }
     if let Some(e) = &q.error {
         egui::Frame::new().fill(theme::mix(p.panel_alt, p.danger, 0.14)).corner_radius(8).inner_margin(10).show(ui, |ui| {
@@ -686,16 +737,7 @@ pub(super) fn table_view(ui: &mut egui::Ui, tt: &mut TableTab, id: u64, p: &Pale
                     tt.deletes.clear();
                 }
             }
-            ui.menu_button("⬇ Export", |ui| {
-                if ui.button("CSV   Ctrl+E").clicked() {
-                    actions.push(Action::Export(false));
-                    ui.close_menu();
-                }
-                if ui.button("JSON  Ctrl+Shift+J").clicked() {
-                    actions.push(Action::Export(true));
-                    ui.close_menu();
-                }
-            });
+            ui.menu_button("⬇ Export", |ui| export_menu(ui, actions));
             if editable {
                 if ui.add(ghost_button(p, "+ Row")).clicked() {
                     actions.push(Action::AddRow);
