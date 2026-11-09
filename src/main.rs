@@ -35,6 +35,11 @@ fn main() -> eframe::Result<()> {
             return Ok(());
         }
     }
+    // `--app-id` prints the window id the desktop will use to find the icon
+    if args.iter().any(|a| a == "--app-id") {
+        println!("{}", integrate::app_id());
+        return Ok(());
+    }
     // `--bench "<sql>" [--conn <name>]` times a query 10 times and exits
     if let Some(sql) = arg("--bench") {
         match debug::bench(&sql, arg("--conn").as_deref()) {
@@ -79,7 +84,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(brand::NAME)
-            .with_app_id(std::env::var("FLATPAK_ID").unwrap_or_else(|_| "baselens".into()))
+            .with_app_id(integrate::app_id())
             .with_icon(brand::window_icon())
             .with_inner_size(window_size())
             .with_min_inner_size([760.0, 480.0]),

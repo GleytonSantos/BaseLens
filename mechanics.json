@@ -772,6 +772,24 @@
       "group": "connections",
       "value": "n*100 - 872",
       "source": "function 0x685df20 (sqliteDefaultBusyCallback) (constant 0xfffffc98), totals table 0x2101a9c"
+    },
+    {
+      "name": "Launcher entry variable read by the original",
+      "group": "desktop",
+      "value": "CHROME_DESKTOP",
+      "source": "function 0x2c0cc60, string 0x11c2814"
+    },
+    {
+      "name": "Fallback application name (original)",
+      "group": "desktop",
+      "value": "Electron",
+      "source": "function 0x2c0a940, constant 0x6e6f727463656c45"
+    },
+    {
+      "name": "Default window app id",
+      "group": "desktop",
+      "value": "baselens",
+      "source": "BaseLens; launching entry id used instead when GIO_LAUNCHED_DESKTOP_FILE_PID matches (rule adapted from 0x2c0a940)"
     }
   ]
 }

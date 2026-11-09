@@ -65,6 +65,7 @@ Everything lands in `dist/`.
 | `--screenshot <file.png>` | opens with demo data, saves a picture of the window and quits |
 | `--self-test` | test robot: clicks and types through the app and reports problems |
 | `--install-desktop-entry` / `--remove-desktop-entry` | adds or removes the menu entry and icon for a copy not installed by a package (the AppImage does it by itself on first start) |
+| `--app-id` | prints the window id the desktop uses to find the icon |
 | `--export-brand <folder>` | writes the logo (SVG, PNGs, .ico) and the .desktop file |
 
 ## Tests

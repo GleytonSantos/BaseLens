@@ -145,6 +145,11 @@ pub fn on_startup() {
     let Some(appimage) = std::env::var("APPIMAGE").ok().filter(|p| Path::new(p).is_file()) else {
         return;
     };
+    // started from a menu entry another tool installed (it names the window):
+    // that entry already has the icon, don't add a second one
+    if app_id() != "baselens" {
+        return;
+    }
     let Some(data) = data_home() else { return };
     match ensure_in(&data, &appimage) {
         Ok(Outcome::Written) => {
@@ -183,9 +188,59 @@ pub fn remove_cli() -> Result<String, String> {
     }
 }
 
+/// The window's app id, which Wayland desktops use to find its menu entry
+/// and icon.
+///
+/// The original (Electron, 0x2c0a940 → 0x2c0cc60) names itself from the
+/// menu entry that launched it: it reads `$CHROME_DESKTOP`, opens that entry
+/// with `g_desktop_app_info_new` and takes its `Name`, falling back to
+/// "Electron". `$CHROME_DESKTOP` is inherited by every child (a terminal in
+/// VS Code has `code.desktop`), so BaseLens uses GLib's launch variables
+/// instead, which carry the launched process id: when
+/// `GIO_LAUNCHED_DESKTOP_FILE_PID` is this process and that entry starts
+/// BaseLens, its file name becomes the app id. AppImage managers that install
+/// their own entry (Gear Lever, AppImageLauncher...) then get their icon.
+/// Inside Flatpak the id is `$FLATPAK_ID`; otherwise `baselens`.
+pub fn app_id() -> String {
+    let get = |k: &str| std::env::var(k).ok();
+    let entry = get("GIO_LAUNCHED_DESKTOP_FILE");
+    let text = entry.as_deref().and_then(|p| std::fs::read_to_string(p).ok());
+    app_id_from(get("FLATPAK_ID"), entry.as_deref(), get("GIO_LAUNCHED_DESKTOP_FILE_PID").as_deref(), std::process::id(), text.as_deref())
+}
+
+pub fn app_id_from(flatpak: Option<String>, entry: Option<&str>, entry_pid: Option<&str>, pid: u32, entry_text: Option<&str>) -> String {
+    if let Some(f) = flatpak.filter(|f| !f.is_empty()) {
+        return f;
+    }
+    let launched_us = entry_pid.and_then(|p| p.trim().parse::<u32>().ok()) == Some(pid);
+    if let (true, Some(path), Some(text)) = (launched_us, entry, entry_text) {
+        let starts_baselens = text.lines().any(|l| l.starts_with("Exec=") && l.to_ascii_lowercase().contains("baselens"));
+        let id = Path::new(path).file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".desktop"));
+        if let (true, Some(id)) = (starts_baselens, id) {
+            if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+                return id.to_string();
+            }
+        }
+    }
+    "baselens".into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_id_follows_the_entry_that_launched_it() {
+        let e = "[Desktop Entry]\nExec=/home/me/Apps/BaseLens.AppImage %F\nIcon=gearlever_baselens\n";
+        let p = Some("/home/me/.local/share/applications/gearlever_baselens_1a2b.desktop");
+        assert_eq!(app_id_from(None, p, Some("42"), 42, Some(e)), "gearlever_baselens_1a2b");
+        // inherited by a child, not launched for us
+        assert_eq!(app_id_from(None, p, Some("41"), 42, Some(e)), "baselens");
+        // an entry for another program
+        assert_eq!(app_id_from(None, p, Some("42"), 42, Some("[Desktop Entry]\nExec=code %F\n")), "baselens");
+        assert_eq!(app_id_from(Some("dev.baselens.BaseLens".into()), p, Some("42"), 42, Some(e)), "dev.baselens.BaseLens");
+        assert_eq!(app_id_from(None, None, None, 42, None), "baselens");
+    }
 
     #[test]
     fn writes_updates_and_removes_only_its_own_files() {
