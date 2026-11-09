@@ -11,6 +11,7 @@ mod db;
 mod debug;
 mod filter;
 mod finder;
+mod integrate;
 mod store;
 mod theme;
 mod widgets;
@@ -21,6 +22,19 @@ fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let arg = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     debug::init(&args);
+    // menu entry and icon for copies not installed by a package (AppImage, tar.gz)
+    for (flag, f) in [("--install-desktop-entry", integrate::install_cli as fn() -> Result<String, String>), ("--remove-desktop-entry", integrate::remove_cli)] {
+        if args.iter().any(|a| a == flag) {
+            match f() {
+                Ok(m) => println!("{m}"),
+                Err(e) => {
+                    eprintln!("{flag} failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return Ok(());
+        }
+    }
     // `--bench "<sql>" [--conn <name>]` times a query 10 times and exits
     if let Some(sql) = arg("--bench") {
         match debug::bench(&sql, arg("--conn").as_deref()) {
@@ -58,6 +72,10 @@ fn main() -> eframe::Result<()> {
         }));
     }
     let screenshot = arg("--screenshot").map(std::path::PathBuf::from);
+    if screenshot.is_none() {
+        // AppImage: Wayland desktops take the window icon from a menu entry
+        integrate::on_startup();
+    }
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(brand::NAME)

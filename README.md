@@ -64,6 +64,7 @@ Everything lands in `dist/`.
 | `--bench "<sql>" [--conn <name>]` | runs a query 10 times on a saved connection and prints min / avg / max of each step |
 | `--screenshot <file.png>` | opens with demo data, saves a picture of the window and quits |
 | `--self-test` | test robot: clicks and types through the app and reports problems |
+| `--install-desktop-entry` / `--remove-desktop-entry` | adds or removes the menu entry and icon for a copy not installed by a package (the AppImage does it by itself on first start) |
 | `--export-brand <folder>` | writes the logo (SVG, PNGs, .ico) and the .desktop file |
 
 ## Tests
