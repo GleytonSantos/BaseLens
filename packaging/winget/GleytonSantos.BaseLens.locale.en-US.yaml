@@ -1,0 +1,21 @@
+PackageIdentifier: GleytonSantos.BaseLens
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: Gleyton Santos
+PublisherUrl: https://github.com/GleytonSantos
+PackageName: BaseLens
+PackageUrl: https://github.com/GleytonSantos/BaseLens
+License: MIT
+LicenseUrl: https://github.com/GleytonSantos/BaseLens/blob/main/LICENSE
+ShortDescription: Free, private desktop editor for SQLite, PostgreSQL and MySQL.
+Description: BaseLens is a free, private desktop database editor with one navigator for every database, filters without SQL, smart autocomplete, JSON viewer, charts, SSH tunnels and an optional AI assistant.
+Moniker: baselens
+Tags:
+  - database
+  - sql
+  - postgresql
+  - mysql
+  - sqlite
+ReleaseNotesUrl: https://github.com/GleytonSantos/BaseLens/releases/tag/v0.1.0
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -1,0 +1,23 @@
+pkgbase = baselens-bin
+	pkgdesc = See into every database: a free, private desktop editor for SQLite, PostgreSQL and MySQL (prebuilt)
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/GleytonSantos/BaseLens
+	arch = x86_64
+	license = MIT
+	depends = gcc-libs
+	depends = glibc
+	depends = openssl
+	depends = libxkbcommon
+	depends = libglvnd
+	depends = hicolor-icon-theme
+	optdepends = openssh: SSH tunnels to databases behind a bastion
+	optdepends = ollama: local AI assistant
+	provides = baselens
+	conflicts = baselens
+	options = !strip
+	options = !debug
+	source = https://github.com/GleytonSantos/BaseLens/releases/download/v0.1.0/baselens-0.1.0-linux-x86_64.tar.gz
+	sha256sums = 610bc3c482ba6b5014b1a0aa008e08116cee4de6bd4f9117ee4965bfe71c9e72
+
+pkgname = baselens-bin

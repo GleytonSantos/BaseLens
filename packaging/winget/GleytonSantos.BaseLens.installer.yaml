@@ -1,0 +1,17 @@
+# winget installer manifest (copy the three files to
+# manifests/g/GleytonSantos/BaseLens/<version>/ in microsoft/winget-pkgs).
+# scripts/update-channels.sh <version> fills the version and checksum.
+PackageIdentifier: GleytonSantos.BaseLens
+PackageVersion: 0.1.0
+InstallerType: nullsoft
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+UpgradeBehavior: install
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/GleytonSantos/BaseLens/releases/download/v0.1.0/BaseLens-0.1.0-windows-x64-setup.exe
+    InstallerSha256: 2B46217BB041B0C2F6CB310A3E93F978CDD8BA8BBF4A643F801FD32108270623
+ManifestType: installer
+ManifestVersion: 1.6.0
