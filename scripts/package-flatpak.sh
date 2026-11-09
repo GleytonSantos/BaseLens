@@ -28,7 +28,9 @@ sed -i "s/^Icon=baselens/Icon=$APP_ID/; s/^StartupWMClass=.*/StartupWMClass=$APP
 META="$BUILD/files/share/metainfo/$APP_ID.metainfo.xml"
 install -Dm644 "packaging/linux/$APP_ID.metainfo.xml" "$META"
 sed -i "s/baselens.desktop/$APP_ID.desktop/" "$META"
-install -Dm644 "$SRC/assets/baselens.svg" "$BUILD/files/share/icons/hicolor/scalable/apps/$APP_ID.svg"
+# Note: no scalable SVG icon — flatpak build-export validates icons through
+# gdk-pixbuf, and the GitHub runner lacks the librsvg loader, so an SVG makes
+# it fail with "Format not recognized". PNG sizes below cover every use.
 for n in 16 32 48 64 128 256 512; do
     install -Dm644 "$SRC/assets/baselens-$n.png" "$BUILD/files/share/icons/hicolor/${n}x${n}/apps/$APP_ID.png"
 done

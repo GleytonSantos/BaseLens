@@ -22,8 +22,9 @@ modules:
       - install -Dm755 baselens /app/bin/baselens
       - install -Dm644 assets/baselens.desktop /app/share/applications/dev.baselens.BaseLens.desktop
       - sed -i 's/^Icon=baselens/Icon=dev.baselens.BaseLens/; s/^StartupWMClass=.*/StartupWMClass=dev.baselens.BaseLens/' /app/share/applications/dev.baselens.BaseLens.desktop
-      - install -Dm644 assets/baselens.svg /app/share/icons/hicolor/scalable/apps/dev.baselens.BaseLens.svg
+      - install -Dm644 assets/baselens-128.png /app/share/icons/hicolor/128x128/apps/dev.baselens.BaseLens.png
       - install -Dm644 assets/baselens-256.png /app/share/icons/hicolor/256x256/apps/dev.baselens.BaseLens.png
+      - install -Dm644 assets/baselens-512.png /app/share/icons/hicolor/512x512/apps/dev.baselens.BaseLens.png
     sources:
       - type: archive
         path: ../../dist/baselens-0.1.0-linux-x86_64.tar.gz
