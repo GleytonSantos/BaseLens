@@ -324,6 +324,9 @@ impl App {
                         ui.painter().circle_filled(r.center(), 4.0, dot);
                         ui.label(RichText::new(format!("{} · {}", o.label(), txt)).small().color(p.text));
                         ui.label(RichText::new(&o.server).small().color(p.text_light));
+                        if let Some(v) = o.cfg.via_label() {
+                            ui.label(RichText::new(format!("🔐 {v}")).small().color(p.text_light));
+                        }
                         if !o.current_db.is_empty() {
                             ui.label(RichText::new(format!("db {}", o.current_db)).small().color(p.text_light));
                         }
@@ -798,6 +801,7 @@ impl App {
                 self.new_query_tab(sid, sql);
             }
             Action::ShowJson => self.settings.show_json = true,
+            Action::StopQuery => self.stop_query(tid, StopReason::Person),
             Action::Argon2 { check, cell } => {
                 use crate::argon2tool::{Mode, Tool};
                 let mut t = Tool::new(if check.is_some() { Mode::Verify } else { Mode::Hash });

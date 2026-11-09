@@ -243,6 +243,23 @@ fn live_pg() {
     r.unwrap();
     let (r, _) = run("select count(*) from orders where customer = 'tx-test'", 100);
     assert_eq!(r.unwrap()[0].rows[0][0].display(), "0");
+    // typed values come back as numbers, not text
+    let (r, _) = run("select 1::int as i, 2.5::float8 as f, true as b", 10);
+    let r = r.unwrap();
+    assert!(matches!(r[0].rows[0][0], Cell::Int(1)) && matches!(r[0].rows[0][1], Cell::Float(_)));
+    // a long query is stopped on the server
+    assert!(h.send(Request::Query { tag: 2, sql: "select pg_sleep(30)".into(), max_rows: 10, sent: Instant::now() }));
+    std::thread::sleep(Duration::from_millis(500));
+    let t = Instant::now();
+    assert!(h.cancel());
+    match next("done") {
+        Response::QueryDone { results, .. } => assert!(results.unwrap_err().contains("57014")),
+        _ => unreachable!(),
+    }
+    assert!(t.elapsed() < Duration::from_secs(5));
+    // and the connection still works afterwards
+    let (r, _) = run("select 1", 10);
+    assert!(r.is_ok());
 }
 
 /// SQLite's default busy handler, as read in the original (0x685df20):
@@ -354,4 +371,76 @@ fn tls_floor_is_tls12() {
     for v in ["TLSv1.2", "TLSv1.3"] {
         assert!(!tls_version_too_old(v), "{v}");
     }
+}
+
+#[test]
+fn splits_postgres_dollar_quoted_bodies() {
+    let sql = "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RAISE NOTICE 'a;b'; RETURN 1; END; $$ LANGUAGE plpgsql; SELECT f();";
+    let s = split_statements(sql);
+    assert_eq!(s.len(), 2, "{s:?}");
+    assert!(s[0].ends_with("LANGUAGE plpgsql"));
+    assert_eq!(s[1], "SELECT f()");
+    // named tags, another tag inside, and $1 parameters
+    let s = split_statements("DO $body$ BEGIN PERFORM $x$;$x$; END $body$; SELECT $1::int; SELECT 'it''s; fine'");
+    assert_eq!(s.len(), 3, "{s:?}");
+    assert_eq!(s[1], "SELECT $1::int");
+    // a DO block is not a read
+    let w = ["DE", "LETE"].concat();
+    assert!(!is_read_query(&format!("DO $$ BEGIN {w} FROM t; END $$")));
+}
+
+#[test]
+fn comment_marks_inside_strings_do_not_hide_writes() {
+    // security: `--` inside a string used to hide the rest of the line
+    let w = ["DE", "LETE"].concat();
+    assert!(!is_read_query("SELECT '--', pg_terminate_backend(1)"));
+    assert!(!is_read_query(&format!("SELECT '/*', 1 FROM t; {w} FROM t -- */")));
+    assert!(!is_read_query("SELECT $$--$$, setval('s', 1)"));
+    assert!(is_read_query(&format!("SELECT '-- not a comment' AS x -- a real one: {w}")));
+    assert!(is_read_query(&format!("/* {w} */ SELECT 1")));
+}
+
+#[test]
+fn postgres_values_get_their_types() {
+    use postgres::types::Type;
+    assert!(matches!(pg_cell(Some("42"), Some(&Type::INT4)), Cell::Int(42)));
+    assert!(matches!(pg_cell(Some("-9007199254740993"), Some(&Type::INT8)), Cell::Int(-9007199254740993)));
+    assert!(matches!(pg_cell(Some("1.5"), Some(&Type::FLOAT8)), Cell::Float(f) if f == 1.5));
+    assert!(matches!(pg_cell(Some("12.50"), Some(&Type::NUMERIC)), Cell::Float(f) if f == 12.5));
+    // too many digits for a float: kept as text, nothing lost
+    assert!(matches!(pg_cell(Some("12345678901234567890.123"), Some(&Type::NUMERIC)), Cell::Text(_)));
+    assert!(matches!(pg_cell(Some("t"), Some(&Type::BOOL)), Cell::Text(ref s) if s == "true"));
+    assert!(matches!(pg_cell(Some("\\xdeadbeef"), Some(&Type::BYTEA)), Cell::Bytes(ref b) if b == &vec![0xde, 0xad, 0xbe, 0xef]));
+    assert!(matches!(pg_cell(Some("2026-01-02 03:04:05"), Some(&Type::TIMESTAMP)), Cell::Text(_)));
+    assert!(matches!(pg_cell(None, Some(&Type::INT4)), Cell::Null));
+    assert!(matches!(pg_cell(Some("7"), None), Cell::Text(_)));
+}
+
+#[test]
+fn literals_follow_the_database() {
+    let b = Cell::Bytes(vec![0xde, 0xad]);
+    assert_eq!(b.sql_literal_for(DbKind::Postgres), "'\\xdead'::bytea");
+    assert_eq!(b.sql_literal_for(DbKind::Sqlite), "X'dead'");
+    assert_eq!(Cell::Float(f64::NAN).sql_literal_for(DbKind::Postgres), "'NaN'::float8");
+    assert_eq!(Cell::Int(3).sql_literal_for(DbKind::Postgres), "3");
+}
+
+#[test]
+fn sqlite_query_can_be_stopped() {
+    use std::time::{Duration, Instant};
+    let cfg = ConnConfig { kind: DbKind::Sqlite, path: ":memory:".into(), ..Default::default() };
+    let h = spawn(cfg, String::new());
+    assert!(matches!(h.rx.recv().unwrap(), Response::Connected { .. }));
+    let _ = h.rx.recv().unwrap();
+    // a query that would run for a very long time
+    let slow = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c";
+    assert!(h.send(Request::Query { tag: 9, sql: slow.into(), max_rows: 10, sent: Instant::now() }));
+    std::thread::sleep(Duration::from_millis(300));
+    let t = Instant::now();
+    assert!(h.cancel());
+    match h.rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+        Response::QueryDone { results, .. } => assert!(results.unwrap_err().to_lowercase().contains("interrupt")),
+        _ => panic!("unexpected response"),
+    }
+    assert!(t.elapsed() < Duration::from_secs(5));
 }

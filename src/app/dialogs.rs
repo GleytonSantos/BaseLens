@@ -621,6 +621,35 @@ impl App {
                             ui.label(RichText::new("⚠ Encrypted but not verified (like sslmode=require): someone on the network could pretend to be the server and read the password. Verify the certificate when you can.").small().color(p.warning));
                             ui.end_row();
                         }
+                        ui.label("SSH tunnel");
+                        ui.checkbox(&mut ed.cfg.ssh, "Connect through an SSH server (bastion)");
+                        ui.end_row();
+                        if ed.cfg.ssh {
+                            ui.label("SSH host");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::TextEdit::singleline(&mut ed.cfg.ssh_host).desired_width(220.0).hint_text("bastion.example.com"));
+                                ui.label("port");
+                                ui.add(egui::DragValue::new(&mut ed.cfg.ssh_port).range(1..=65535));
+                            });
+                            ui.end_row();
+                            ui.label("SSH user");
+                            ui.add(egui::TextEdit::singleline(&mut ed.cfg.ssh_user).desired_width(300.0).hint_text("optional (from ~/.ssh/config)"));
+                            ui.end_row();
+                            ui.label("Key file");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::TextEdit::singleline(&mut ed.cfg.ssh_key).desired_width(240.0).hint_text("optional (ssh-agent / ~/.ssh)"));
+                                if ui.button("Browse…").clicked() {
+                                    let start = dirs::home_dir().map(|h| h.join(".ssh")).unwrap_or_default();
+                                    if let Some(f) = if store::robot_mode() { None } else { rfd::FileDialog::new().set_directory(start).pick_file() } {
+                                        ed.cfg.ssh_key = f.to_string_lossy().to_string();
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                            ui.label("");
+                            ui.label(RichText::new("Uses your system's ssh, keys and ~/.ssh/config. Host above = the database as seen from the SSH server (often localhost). Password logins for SSH aren't supported: use a key or ssh-agent.").small().color(p.text_light));
+                            ui.end_row();
+                        }
                     }
                     ui.label("Mode");
                     ui.checkbox(&mut ed.cfg.read_only, "Read-only (block changes)");
@@ -790,6 +819,7 @@ impl App {
                         changed |= ui.add(egui::Slider::new(&mut s.font_scale, 0.85..=1.4).text("Text size")).changed();
                         changed |= ui.add(egui::Slider::new(&mut s.page_size, 25..=1000).text("Rows per table page")).changed();
                         changed |= ui.add(egui::Slider::new(&mut s.max_results, 100..=200000).logarithmic(true).text("Max rows per query")).changed();
+                        changed |= ui.add(egui::Slider::new(&mut s.query_timeout_secs, 0..=3600).logarithmic(true).text("Stop queries after (seconds, 0 = never)")).changed();
                     }
                     SettingsPage::Ai => {
                         let a = &mut s.ai;

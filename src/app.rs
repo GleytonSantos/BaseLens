@@ -56,6 +56,8 @@ pub struct Settings {
     /// remember names and values from my queries for suggestions
     pub remember_suggestions: bool,
     pub recent: Vec<u64>,
+    /// stop a query on the server after this many seconds (0 = never)
+    pub query_timeout_secs: u64,
 }
 
 impl Default for Settings {
@@ -73,6 +75,7 @@ impl Default for Settings {
             show_json: true,
             remember_suggestions: true,
             recent: vec![],
+            query_timeout_secs: 0,
         }
     }
 }
@@ -150,6 +153,16 @@ struct QueryTab {
     cursor: (usize, usize),
     ac: AcState,
     editor_op: Option<EditorOp>,
+    /// when the running query started, and whether a stop was asked (by
+    /// the person, or by the time limit)
+    started: Option<Instant>,
+    stop_asked: Option<StopReason>,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum StopReason {
+    Person,
+    TimeLimit(u64),
 }
 
 /// Autocomplete popup state.
@@ -492,6 +505,8 @@ enum Action {
     /// sample the distinct values of (table, column) for suggestions
     FetchValues(String, String),
     Settings,
+    /// stop the query running in this tab
+    StopQuery,
     /// open the Argon2 tool: check this hash, or fill this cell (row, column)
     Argon2 { check: Option<String>, cell: Option<(usize, usize)> },
 }
@@ -1105,6 +1120,8 @@ impl App {
                 if let Some(t) = self.tab_mut(tid) {
                     if let TabKind::Query(q) = &mut t.kind {
                         q.running = false;
+                        q.started = None;
+                        let stopped = q.stop_asked.take();
                         match results {
                             Ok(r) => {
                                 let rows: usize = r.iter().map(|x| x.rows.len()).sum();
@@ -1116,7 +1133,13 @@ impl App {
                                 q.error = None;
                                 q.grid = GridState::default();
                             }
-                            Err(e) => q.error = Some(e),
+                            Err(e) => {
+                                q.error = Some(match stopped {
+                                    Some(StopReason::Person) => format!("Query stopped.\n\n{e}"),
+                                    Some(StopReason::TimeLimit(s)) => format!("Query stopped after the {s}-second limit (Settings → General).\n\n{e}"),
+                                    None => e,
+                                })
+                            }
                         }
                     }
                 }
@@ -1363,7 +1386,7 @@ impl App {
                         if v.is_null() {
                             format!("{} IS NULL", kind.quote(name))
                         } else {
-                            format!("{} = {}", kind.quote(name), v.sql_literal())
+                            format!("{} = {}", kind.quote(name), v.sql_literal_for(kind))
                         }
                     })
                 })
@@ -1380,7 +1403,7 @@ impl App {
         let mut rows: Vec<_> = by_row.into_iter().collect();
         rows.sort_by_key(|x| x.0);
         for (r, changes) in rows {
-            let sets: Vec<String> = changes.iter().map(|(c, v)| format!("{} = {}", kind.quote(&data.columns[*c]), v.sql_literal())).collect();
+            let sets: Vec<String> = changes.iter().map(|(c, v)| format!("{} = {}", kind.quote(&data.columns[*c]), v.sql_literal_for(kind))).collect();
             stmts.push(format!("UPDATE {q} SET {} WHERE {}", sets.join(", "), where_for(r)));
         }
         let mut dels: Vec<_> = tt.deletes.iter().copied().collect();
@@ -1394,6 +1417,40 @@ impl App {
         let sql = stmts.join(";\n");
         if let Err(e) = self.send(sid, sql, Purpose::TableSave(tid), 1) {
             self.toast(e, false);
+        }
+    }
+
+    /// Asks the server to stop the query running in a tab.
+    pub(super) fn stop_query(&mut self, tid: u64, why: StopReason) {
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == tid) else { return };
+        let sid = t.conn;
+        let TabKind::Query(q) = &mut t.kind else { return };
+        if !q.running || q.stop_asked.is_some() {
+            return;
+        }
+        q.stop_asked = Some(why);
+        let ok = self.open.iter().find(|o| o.sid == sid).map(|o| o.handle.cancel()).unwrap_or(false);
+        if !ok {
+            self.toast("This connection can't stop a query yet.", false);
+        }
+    }
+
+    /// Time limit for queries (Settings → General).
+    fn enforce_query_timeout(&mut self) {
+        let limit = self.settings.query_timeout_secs;
+        if limit == 0 {
+            return;
+        }
+        let due: Vec<u64> = self
+            .tabs
+            .iter()
+            .filter_map(|t| match &t.kind {
+                TabKind::Query(q) if q.running && q.stop_asked.is_none() && q.started.map(|s| s.elapsed().as_secs() >= limit).unwrap_or(false) => Some(t.id),
+                _ => None,
+            })
+            .collect();
+        for id in due {
+            self.stop_query(id, StopReason::TimeLimit(limit));
         }
     }
 
@@ -1416,6 +1473,8 @@ impl App {
         }
         q.running = true;
         q.error = None;
+        q.started = Some(Instant::now());
+        q.stop_asked = None;
         if let Err(e) = self.send(sid, sql, Purpose::Query(tid), max) {
             if let Some(t) = self.tab_mut(tid) {
                 if let TabKind::Query(q) = &mut t.kind {
@@ -2116,6 +2175,7 @@ impl eframe::App for App {
         self.frame += 1;
         self.apply_theme(ctx);
         self.poll();
+        self.enforce_query_timeout();
         self.screenshot_step(ctx);
 
         // activity / idle lock (MECHANICS: idleThresholdSeconds = 300)

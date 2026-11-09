@@ -15,6 +15,7 @@ mod finder;
 mod integrate;
 mod store;
 mod theme;
+mod tunnel;
 mod widgets;
 #[cfg(test)]
 mod tests;

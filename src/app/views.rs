@@ -142,7 +142,13 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
         }
         if q.running {
             ui.spinner();
-            ui.label(RichText::new("Running…").color(p.text_light));
+            let secs = q.started.map(|s| s.elapsed().as_secs()).unwrap_or(0);
+            let txt = if q.stop_asked.is_some() { "Stopping…".to_string() } else if secs >= 1 { format!("Running… {secs} s") } else { "Running…".to_string() };
+            ui.label(RichText::new(txt).color(p.text_light));
+            if q.stop_asked.is_none() && ui.add(ghost_button(p, "■ Stop")).on_hover_text("Stop this query on the server").clicked() {
+                actions.push(Action::StopQuery);
+            }
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.menu_button("⬇ Export", |ui| {

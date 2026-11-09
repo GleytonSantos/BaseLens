@@ -99,6 +99,16 @@ pub struct ConnConfig {
     pub ssl_verify: bool,
     pub read_only: bool,
     pub color: [u8; 3],
+    /// reach the database through an SSH tunnel (see tunnel.rs)
+    pub ssh: bool,
+    pub ssh_host: String,
+    pub ssh_port: u16,
+    pub ssh_user: String,
+    /// private key file; empty = ssh-agent / ~/.ssh defaults
+    pub ssh_key: String,
+    /// local end of the tunnel while connected (never saved)
+    #[serde(skip)]
+    pub via: Option<u16>,
 }
 
 impl Default for ConnConfig {
@@ -118,11 +128,21 @@ impl Default for ConnConfig {
             ssl_verify: true,
             read_only: false,
             color: [74, 208, 255],
+            ssh: false,
+            ssh_host: String::new(),
+            ssh_port: 22,
+            ssh_user: String::new(),
+            ssh_key: String::new(),
+            via: None,
         }
     }
 }
 
 impl ConnConfig {
+    /// "via bastion" when the connection goes through an SSH tunnel.
+    pub fn via_label(&self) -> Option<String> {
+        (self.ssh && self.kind != DbKind::Sqlite && !self.ssh_host.trim().is_empty()).then(|| format!("via ssh {}", self.ssh_host.trim()))
+    }
     pub fn subtitle(&self) -> String {
         match self.kind {
             DbKind::Sqlite => self.path.clone(),
@@ -197,6 +217,20 @@ impl Cell {
                 .unwrap_or(Value::Null),
             Cell::Text(s) => self.json().unwrap_or_else(|| Value::String(s.clone())),
             Cell::Bytes(_) => Value::String(self.display()),
+        }
+    }
+    /// The value as SQL for one database: PostgreSQL writes bytes as
+    /// '\x…'::bytea (X'…' is a bit string there) and NaN/Infinity quoted.
+    pub fn sql_literal_for(&self, kind: DbKind) -> String {
+        match (self, kind) {
+            (Cell::Bytes(b), DbKind::Postgres) => {
+                let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+                format!("'\\x{h}'::bytea")
+            }
+            (Cell::Float(f), DbKind::Postgres) if !f.is_finite() => {
+                format!("'{}'::float8", if f.is_nan() { "NaN" } else if *f > 0.0 { "Infinity" } else { "-Infinity" })
+            }
+            _ => self.sql_literal(),
         }
     }
     pub fn sql_literal(&self) -> String {
@@ -321,6 +355,10 @@ trait Backend {
     fn columns(&mut self, schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>, String>;
     fn foreign_keys(&mut self, tables: &[TableInfo]) -> Vec<ForeignKey>;
     fn run(&mut self, sql: &str, max_rows: usize) -> Result<Vec<QueryResult>, String>;
+    /// How to stop a running query from another thread.
+    fn canceller(&self) -> Option<Canceller> {
+        None
+    }
     /// Columns of every table, keyed like TableInfo::key. Default: one
     /// question per table (fine for local SQLite files).
     fn all_columns(&mut self) -> Result<Vec<(String, Vec<ColumnInfo>)>, String> {
@@ -333,6 +371,10 @@ trait Backend {
     }
 }
 
+/// Stops the query running on a connection, from another thread (PostgreSQL
+/// cancel request, SQLite interrupt, MySQL `KILL QUERY` on a second link).
+pub type Canceller = std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
 pub struct Handle {
     /// Queries, refreshes: the main connection.
     pub tx: Sender<Request>,
@@ -341,6 +383,8 @@ pub struct Handle {
     pub rx: Receiver<Response>,
     /// Requests waiting on the main connection right now.
     pub queue: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// set by the worker once connected
+    canceller: std::sync::Arc<std::sync::Mutex<Option<Canceller>>>,
 }
 
 impl Handle {
@@ -357,6 +401,22 @@ impl Handle {
             self.queue.fetch_sub(1, Ordering::SeqCst);
         }
         ok
+    }
+    /// Asks the server to stop the running query (in the background).
+    /// Returns false when this connection can't be stopped yet.
+    pub fn cancel(&self) -> bool {
+        let c = self.canceller.lock().ok().and_then(|g| g.clone());
+        match c {
+            Some(c) => {
+                std::thread::spawn(move || {
+                    if let Err(e) = c() {
+                        crate::debug::log(&format!("cancel failed: {e}"));
+                    }
+                });
+                true
+            }
+            None => false,
+        }
     }
     pub fn queued(&self) -> usize {
         self.queue.load(std::sync::atomic::Ordering::SeqCst)
@@ -444,17 +504,22 @@ pub fn spawn(cfg: ConnConfig, password: String) -> Handle {
     let (tx_req, rx_req) = channel::<Request>();
     let (tx_res, rx_res) = channel::<Response>();
     let queue = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // local port of the SSH tunnel, once the main worker opened it
+    let via_slot: std::sync::Arc<std::sync::Mutex<Option<u16>>> = Default::default();
+    let via_main = via_slot.clone();
     // second connection for schema questions; opened on the first question,
     // which only comes after the main connection worked
     let meta = if cfg.kind == DbKind::Sqlite {
         None
     } else {
         let (tx_meta, rx_meta) = channel::<Request>();
-        let (cfg2, pw2, tx2) = (cfg.clone(), password.clone(), tx_res.clone());
+        let (mut cfg2, pw2, tx2) = (cfg.clone(), password.clone(), tx_res.clone());
+        let via2 = via_slot.clone();
         std::thread::spawn(move || {
             let mut b: Option<Box<dyn Backend>> = None;
             while let Ok(req) = rx_meta.recv() {
                 if b.is_none() {
+                    cfg2.via = via2.lock().ok().and_then(|v| *v);
                     match open_backend(&cfg2, &pw2) {
                         Ok(x) => b = Some(x),
                         Err(e) => {
@@ -476,9 +541,30 @@ pub fn spawn(cfg: ConnConfig, password: String) -> Handle {
         Some(tx_meta)
     };
     let q = queue.clone();
+    let canceller: std::sync::Arc<std::sync::Mutex<Option<Canceller>>> = Default::default();
+    let cancel_slot = canceller.clone();
     std::thread::spawn(move || {
         let t0 = Instant::now();
         let (dns_ms, tcp_ms) = if crate::debug::on() { probe_network(&cfg) } else { (0.0, 0.0) };
+        // SSH tunnel first; it lives as long as this worker
+        let mut cfg = cfg;
+        let _tunnel = if cfg.ssh && cfg.kind != DbKind::Sqlite {
+            match crate::tunnel::open(&cfg) {
+                Ok(t) => {
+                    cfg.via = Some(t.port);
+                    if let Ok(mut v) = via_main.lock() {
+                        *v = Some(t.port);
+                    }
+                    Some(t)
+                }
+                Err(e) => {
+                    let _ = tx_res.send(Response::Failed(format!("SSH tunnel to {}: {e}", cfg.ssh_host)));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let t1 = Instant::now();
         let mut b = match open_backend(&cfg, &password) {
             Ok(b) => b,
@@ -494,6 +580,9 @@ pub fn spawn(cfg: ConnConfig, password: String) -> Handle {
             tls_login_ms: (login_ms - if crate::debug::on() { dns_ms + tcp_ms } else { 0.0 }).max(0.0),
             total_ms: t0.elapsed().as_secs_f64() * 1000.0,
         };
+        if let Ok(mut slot) = cancel_slot.lock() {
+            *slot = b.canceller();
+        }
         let server = b.server();
         let databases = b.databases();
         let current_db = b.current_db();
@@ -531,62 +620,119 @@ pub fn spawn(cfg: ConnConfig, password: String) -> Handle {
             }
         }
     });
-    Handle { tx: tx_req, meta, rx: rx_res, queue }
+    Handle { tx: tx_req, meta, rx: rx_res, queue, canceller }
 }
 
-/// Splits a script into statements on `;`, ignoring semicolons inside quotes
-/// and comments.
-pub fn split_statements(sql: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
+/// Length of a PostgreSQL dollar-quote tag starting at `i` (`$$` or
+/// `$name$`, name = letter or `_` then letters, digits, `_`), or None. `$1`
+/// (a parameter) is not a tag, nor is `$` inside a word (`a$b$`).
+fn dollar_tag(chars: &[char], i: usize) -> Option<usize> {
+    if chars.get(i) != Some(&'$') {
+        return None;
+    }
+    if i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
+        return None;
+    }
+    let mut j = i + 1;
+    if chars.get(j) == Some(&'$') {
+        return Some(2);
+    }
+    match chars.get(j) {
+        Some(c) if c.is_alphabetic() || *c == '_' => {}
+        _ => return None,
+    }
+    while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+        j += 1;
+    }
+    (chars.get(j) == Some(&'$')).then_some(j + 1 - i)
+}
+
+/// One pass over SQL that knows about '…' "…" `…` strings (a doubled quote
+/// stays inside), PostgreSQL $tag$…$tag$ bodies, -- line comments and
+/// /* */ comments. Returns the statements split on `;` outside all of
+/// those, each with and without its comments.
+fn scan_sql(sql: &str) -> Vec<(String, String)> {
     let chars: Vec<char> = sql.chars().collect();
+    let n = chars.len();
+    let mut out = Vec::new();
+    let (mut cur, mut bare) = (String::new(), String::new());
     let mut i = 0;
-    let mut quote: Option<char> = None;
-    while i < chars.len() {
+    let flush = |cur: &mut String, bare: &mut String, out: &mut Vec<(String, String)>| {
+        if !bare.trim().is_empty() {
+            out.push((cur.trim().to_string(), bare.trim().to_string()));
+        }
+        cur.clear();
+        bare.clear();
+    };
+    while i < n {
         let c = chars[i];
-        if let Some(q) = quote {
-            cur.push(c);
-            if c == q {
-                quote = None;
+        if c == '\'' || c == '"' || c == '`' {
+            let start = i;
+            i += 1;
+            while i < n {
+                if chars[i] == c {
+                    if chars.get(i + 1) == Some(&c) {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
             }
-        } else if c == '\'' || c == '"' || c == '`' {
-            quote = Some(c);
-            cur.push(c);
+            let t: String = chars[start..i].iter().collect();
+            cur.push_str(&t);
+            bare.push_str(&t);
+        } else if let Some(len) = dollar_tag(&chars, i) {
+            let tag: Vec<char> = chars[i..i + len].to_vec();
+            let start = i;
+            i += len;
+            // the body runs to the same tag
+            while i < n && !(chars[i] == '$' && chars[i..].starts_with(&tag)) {
+                i += 1;
+            }
+            i = (i + len).min(n);
+            let t: String = chars[start..i].iter().collect();
+            cur.push_str(&t);
+            bare.push_str(&t);
         } else if c == '-' && chars.get(i + 1) == Some(&'-') {
-            while i < chars.len() && chars[i] != '\n' {
+            while i < n && chars[i] != '\n' {
                 cur.push(chars[i]);
                 i += 1;
             }
-            continue;
+            bare.push(' ');
         } else if c == '/' && chars.get(i + 1) == Some(&'*') {
-            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
-                cur.push(chars[i]);
+            let start = i;
+            i += 2;
+            while i < n && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
                 i += 1;
             }
-            cur.push_str("*/");
-            i += 2;
-            continue;
+            i = (i + 2).min(n);
+            cur.extend(chars[start..i].iter());
+            bare.push(' ');
         } else if c == ';' {
-            if !strip_comments(&cur).trim().is_empty() {
-                out.push(cur.trim().to_string());
-            }
-            cur.clear();
+            flush(&mut cur, &mut bare, &mut out);
+            i += 1;
         } else {
             cur.push(c);
+            bare.push(c);
+            i += 1;
         }
-        i += 1;
     }
-    if !strip_comments(&cur).trim().is_empty() {
-        out.push(cur.trim().to_string());
-    }
+    flush(&mut cur, &mut bare, &mut out);
     out
 }
 
+/// Splits a script into statements on `;`, ignoring semicolons inside
+/// quotes, PostgreSQL dollar-quoted bodies and comments.
+pub fn split_statements(sql: &str) -> Vec<String> {
+    scan_sql(sql).into_iter().map(|(s, _)| s).collect()
+}
+
+/// The SQL without its comments; strings and dollar-quoted bodies are kept
+/// whole (a `--` inside a string is not a comment).
 fn strip_comments(s: &str) -> String {
-    s.lines()
-        .map(|l| l.split("--").next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n")
+    scan_sql(s).into_iter().map(|(_, b)| b).collect::<Vec<_>>().join(";\n")
 }
 
 /// Functions that change data or the server even inside a SELECT (or run a
@@ -692,6 +838,13 @@ fn open_sqlite(cfg: &ConnConfig) -> Result<Sqlite, String> {
 }
 
 impl Backend for Sqlite {
+    fn canceller(&self) -> Option<Canceller> {
+        let h = self.c.get_interrupt_handle();
+        Some(std::sync::Arc::new(move || {
+            h.interrupt();
+            Ok(())
+        }))
+    }
     fn server(&mut self) -> String {
         format!("SQLite {}", rusqlite::version())
     }
@@ -796,6 +949,8 @@ impl Backend for Sqlite {
 
 struct Pg {
     c: postgres::Client,
+    /// (TLS on, certificate verified) of the live connection, for cancel requests
+    tls: (bool, bool),
     read_only: bool,
     /// The person opened a transaction (BEGIN) that is still going.
     in_tx: bool,
@@ -941,8 +1096,19 @@ pub fn pg_advice(e: &postgres::Error, cfg: &ConnConfig, user: &str) -> Option<St
 /// upgrade to TLS always verifies (security review #1).
 fn pg_connect(cfg: &ConnConfig, password: &str, user: &str, tls: bool, verify: bool) -> Result<postgres::Client, postgres::Error> {
     let mut pc = postgres::Config::new();
-    pc.host(&cfg.host)
-        .port(cfg.port)
+    pc.host(&cfg.host);
+    match cfg.via {
+        // through the SSH tunnel: connect to its local end, while TLS still
+        // checks the certificate against the real host name (each call to
+        // port()/hostaddr() adds an entry, so exactly one of each)
+        Some(local) => {
+            pc.hostaddr(std::net::IpAddr::from([127, 0, 0, 1])).port(local);
+        }
+        None => {
+            pc.port(cfg.port);
+        }
+    }
+    pc
         .user(user)
         .connect_timeout(Duration::from_millis(PG_CONNECT_TIMEOUT_MS))
         .keepalives(true)
@@ -977,6 +1143,7 @@ fn pg_connect(cfg: &ConnConfig, password: &str, user: &str, tls: bool, verify: b
 fn open_pg(cfg: &ConnConfig, password: &str) -> Result<Pg, String> {
     let user = effective_user(cfg);
     let first = pg_connect(cfg, password, &user, cfg.ssl, cfg.ssl && cfg.ssl_verify);
+    let mut tls = (cfg.ssl, cfg.ssl && cfg.ssl_verify);
     let mut c = match first {
         Ok(c) => c,
         Err(e) => {
@@ -995,7 +1162,10 @@ fn open_pg(cfg: &ConnConfig, password: &str) -> Result<Pg, String> {
                 None => Err(None),
             };
             match retry_err {
-                Ok(c) => c,
+                Ok(c) => {
+                    tls = (true, true);
+                    c
+                }
                 Err(e2) => {
                     if let Some(e2) = e2 {
                         let t = pg_error_text(&e2);
@@ -1025,7 +1195,7 @@ fn open_pg(cfg: &ConnConfig, password: &str) -> Result<Pg, String> {
     if cfg.read_only {
         let _ = c.batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY");
     }
-    Ok(Pg { c, read_only: cfg.read_only, in_tx: false })
+    Ok(Pg { c, tls, read_only: cfg.read_only, in_tx: false })
 }
 
 
@@ -1187,6 +1357,63 @@ pub fn cursor_friendly(stmt: &str) -> bool {
     matches!(first.as_str(), "SELECT" | "WITH" | "VALUES" | "TABLE") && is_read_query(stmt) && split_statements(stmt).len() == 1
 }
 
+/// A PostgreSQL value (text form) as a typed cell, from its column type:
+/// integers → Int, float4/float8 → Float, numeric → Float only when it
+/// round-trips exactly (otherwise text, so no digits are lost), bool →
+/// true/false, bytea (`\x…`) → bytes; everything else stays text.
+pub fn pg_cell(v: Option<&str>, ty: Option<&postgres::types::Type>) -> Cell {
+    use postgres::types::Type;
+    let Some(v) = v else { return Cell::Null };
+    let Some(ty) = ty else { return Cell::Text(v.to_string()) };
+    match *ty {
+        Type::INT2 | Type::INT4 | Type::INT8 | Type::OID => v.parse().map(Cell::Int).unwrap_or_else(|_| Cell::Text(v.to_string())),
+        Type::FLOAT4 | Type::FLOAT8 => match v {
+            "NaN" => Cell::Float(f64::NAN),
+            "Infinity" => Cell::Float(f64::INFINITY),
+            "-Infinity" => Cell::Float(f64::NEG_INFINITY),
+            _ => v.parse().map(Cell::Float).unwrap_or_else(|_| Cell::Text(v.to_string())),
+        },
+        Type::NUMERIC => match v.parse::<f64>() {
+            // keep it a number only if nothing is lost
+            Ok(f) if f.is_finite() && numeric_same(v, f) => Cell::Float(f),
+            _ => Cell::Text(v.to_string()),
+        },
+        Type::BOOL => Cell::Text(if v == "t" { "true".into() } else if v == "f" { "false".into() } else { v.to_string() }),
+        Type::BYTEA => match v.strip_prefix("\\x") {
+            Some(hex) if hex.len() % 2 == 0 => (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+                .collect::<Result<Vec<u8>, _>>()
+                .map(Cell::Bytes)
+                .unwrap_or_else(|_| Cell::Text(v.to_string())),
+            _ => Cell::Text(v.to_string()),
+        },
+        _ => Cell::Text(v.to_string()),
+    }
+}
+
+/// True when the numeric text and the float mean the same value.
+fn numeric_same(text: &str, f: f64) -> bool {
+    let norm = |t: &str| -> String {
+        let t = t.trim().trim_start_matches('+');
+        let (neg, t) = match t.strip_prefix('-') {
+            Some(r) => (true, r),
+            None => (false, t),
+        };
+        let (int, frac) = t.split_once('.').unwrap_or((t, ""));
+        let int = int.trim_start_matches('0');
+        let frac = frac.trim_end_matches('0');
+        let body = match (int.is_empty(), frac.is_empty()) {
+            (true, true) => "0".to_string(),
+            (true, false) => format!("0.{frac}"),
+            (false, true) => int.to_string(),
+            (false, false) => format!("{int}.{frac}"),
+        };
+        if neg && body != "0" { format!("-{body}") } else { body }
+    };
+    !text.contains(['e', 'E']) && norm(text) == norm(&format!("{f}"))
+}
+
 impl Pg {
     /// Reads a SELECT through a cursor, PG_FETCH_BATCH rows at first, and
     /// stops at max_rows instead of downloading the whole result.
@@ -1195,8 +1422,19 @@ impl Pg {
         let t0 = Instant::now();
         let own_tx = !self.in_tx;
         const CUR: &str = "baselens_cursor";
+        // column types (one extra round trip, before any transaction so a
+        // failure can't abort one): numbers, booleans and bytea then arrive
+        // as real values instead of text. Inside the person's own
+        // transaction, or for statements that can't be described (with $1
+        // parameters), values stay text.
+        let types: Vec<postgres::types::Type> = if own_tx {
+            self.c.prepare(stmt).map(|st| st.columns().iter().map(|c| c.type_().clone()).collect()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let declare = format!("{}DECLARE {CUR} NO SCROLL CURSOR FOR {stmt}", if own_tx { "BEGIN; " } else { "" });
-        if let Err(e) = self.c.batch_execute(&declare) {
+        let declared = self.c.batch_execute(&declare);
+        if let Err(e) = declared {
             if own_tx {
                 let _ = self.c.batch_execute("ROLLBACK");
             }
@@ -1228,7 +1466,7 @@ impl Pg {
                             res.truncated = true;
                             continue;
                         }
-                        res.rows.push((0..row.len()).map(|i| row.get(i).map(|s| Cell::Text(s.to_string())).unwrap_or(Cell::Null)).collect());
+                        res.rows.push((0..row.len()).map(|i| pg_cell(row.get(i), types.get(i))).collect());
                     }
                     _ => {}
                 }
@@ -1260,6 +1498,24 @@ impl Pg {
 }
 
 impl Backend for Pg {
+    fn canceller(&self) -> Option<Canceller> {
+        let token = self.c.cancel_token();
+        let (tls, verify) = self.tls;
+        Some(std::sync::Arc::new(move || {
+            let r = if tls {
+                let connector = native_tls::TlsConnector::builder()
+                    .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
+                    .danger_accept_invalid_certs(!verify)
+                    .danger_accept_invalid_hostnames(!verify)
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                token.cancel_query(postgres_native_tls::MakeTlsConnector::new(connector))
+            } else {
+                token.cancel_query(postgres::NoTls)
+            };
+            r.map_err(|e| pg_error_text(&e))
+        }))
+    }
     fn server(&mut self) -> String {
         self.text_rows("SHOW server_version")
             .ok()
@@ -1434,13 +1690,19 @@ impl Backend for Pg {
 struct My {
     c: mysql::Conn,
     read_only: bool,
+    /// to open the second connection that stops a running query
+    opts: mysql::Opts,
 }
 
 fn open_mysql(cfg: &ConnConfig, password: &str) -> Result<My, String> {
     use mysql::prelude::Queryable;
+    let (host, port) = match cfg.via {
+        Some(local) => ("127.0.0.1".to_string(), local),
+        None => (cfg.host.clone(), cfg.port),
+    };
     let mut b = mysql::OptsBuilder::new()
-        .ip_or_hostname(Some(cfg.host.clone()))
-        .tcp_port(cfg.port)
+        .ip_or_hostname(Some(host))
+        .tcp_port(port)
         .user(Some(cfg.user.clone()))
         .tcp_connect_timeout(Some(Duration::from_millis(MYSQL_CONNECT_TIMEOUT_MS)))
         .tcp_keepalive_time_ms(Some((TCP_KEEPALIVE_IDLE_S * 1000) as u32));
@@ -1463,7 +1725,8 @@ fn open_mysql(cfg: &ConnConfig, password: &str) -> Result<My, String> {
                 .with_danger_skip_domain_validation(!cfg.ssl_verify),
         ));
     }
-    let mut c = mysql::Conn::new(b).map_err(|e| e.to_string())?;
+    let opts: mysql::Opts = b.into();
+    let mut c = mysql::Conn::new(opts.clone()).map_err(|e| e.to_string())?;
     if cfg.ssl {
         // the MySQL driver can't be told a minimum TLS version, so check the
         // one the server agreed to and refuse anything older than TLS 1.2
@@ -1480,7 +1743,7 @@ fn open_mysql(cfg: &ConnConfig, password: &str) -> Result<My, String> {
     if cfg.read_only {
         let _ = c.query_drop("SET SESSION TRANSACTION READ ONLY");
     }
-    Ok(My { c, read_only: cfg.read_only })
+    Ok(My { c, read_only: cfg.read_only, opts })
 }
 
 fn my_cell(v: mysql::Value) -> Cell {
@@ -1521,6 +1784,15 @@ impl My {
 }
 
 impl Backend for My {
+    fn canceller(&self) -> Option<Canceller> {
+        use mysql::prelude::Queryable;
+        let id = self.c.connection_id();
+        let opts = self.opts.clone();
+        Some(std::sync::Arc::new(move || {
+            let mut k = mysql::Conn::new(opts.clone()).map_err(|e| e.to_string())?;
+            k.query_drop(format!("KILL QUERY {id}")).map_err(|e| e.to_string())
+        }))
+    }
     fn server(&mut self) -> String {
         let v = self.strings("SELECT VERSION()");
         let ver = v.first().and_then(|r| r.first()).cloned().unwrap_or_default();
