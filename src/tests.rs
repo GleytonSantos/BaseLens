@@ -299,3 +299,48 @@ fn sqlite_waits_for_a_busy_file_instead_of_failing() {
     }
     release.join().unwrap();
 }
+
+#[test]
+fn read_only_gate_blocks_side_effect_functions() {
+    // security review #2: a SELECT that writes or runs SQL given as text
+    assert!(!is_read_query("SELECT setval('s', 1)"));
+    assert!(!is_read_query("select nextval('orders_id_seq')"));
+    assert!(!is_read_query("SELECT lo_import('/etc/shadow')"));
+    assert!(!is_read_query("SELECT query_to_xml('delete from t', true, true, '')"));
+    assert!(!is_read_query("SELECT pg_terminate_backend(123)"));
+    assert!(is_read_query("SELECT count(*) FROM orders"));
+    // the AI may only auto-run reads without files, sleeps or network links
+    for q in ["SELECT pg_read_file('/etc/passwd')", "SELECT pg_sleep(9999)", "select * from dblink('host=evil', 'select 1') as t(x int)", "SELECT LOAD_FILE('/etc/passwd')", "select sleep(100)", "SELECT readfile('x')"] {
+        assert!(!is_safe_auto_query(q), "{q}");
+    }
+    assert!(is_safe_auto_query("SELECT name, total FROM orders WHERE total > 10 LIMIT 20"));
+}
+
+#[test]
+fn pin_hash_is_argon2id_and_old_hashes_still_unlock() {
+    let h = crate::store::hash_pin_argon2("123456");
+    assert!(h.starts_with("$argon2id$"));
+    assert_eq!(crate::store::verify_pin("123456", "", &h), (true, false));
+    assert_eq!(crate::store::verify_pin("654321", "", &h).0, false);
+    // a settings file from an older version: unlocks and asks to be upgraded
+    let old = crate::store::hash_pin("123456", "salt");
+    assert_eq!(crate::store::verify_pin("123456", "salt", &old), (true, true));
+    assert_eq!(crate::store::verify_pin("000000", "salt", &old), (false, false));
+    assert_eq!(crate::store::verify_pin("", "", "").0, false);
+}
+
+#[cfg(unix)]
+#[test]
+fn debug_log_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("baselens-dbglog-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("BASELENS_HOME", &dir);
+    std::env::set_var("BASELENS_DEBUG", "1");
+    crate::debug::init(&[]);
+    crate::debug::log("select secret from t");
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&dir.join("debug.log")), 0o600);
+    assert_eq!(mode(&dir), 0o700);
+}

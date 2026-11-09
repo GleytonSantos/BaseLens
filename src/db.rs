@@ -576,8 +576,47 @@ fn strip_comments(s: &str) -> String {
         .join("\n")
 }
 
+/// Functions that change data or the server even inside a SELECT (or run a
+/// query given as text). They make a statement count as a write.
+pub const WRITE_FUNCTIONS: &[&str] = &[
+    // PostgreSQL
+    "NEXTVAL", "SETVAL", "LO_IMPORT", "LO_EXPORT", "LO_UNLINK", "LO_CREATE", "LO_CREAT", "LO_FROM_BYTEA", "LO_PUT",
+    "LOWRITE", "LO_TRUNCATE", "PG_TERMINATE_BACKEND", "PG_CANCEL_BACKEND", "PG_RELOAD_CONF", "PG_ROTATE_LOGFILE",
+    "SET_CONFIG", "DBLINK_EXEC", "PG_SWITCH_WAL", "PG_CREATE_RESTORE_POINT", "PG_PROMOTE", "PG_LOGICAL_EMIT_MESSAGE",
+    "PG_CREATE_LOGICAL_REPLICATION_SLOT", "PG_CREATE_PHYSICAL_REPLICATION_SLOT", "PG_DROP_REPLICATION_SLOT",
+    "PG_ADVISORY_LOCK", "PG_ADVISORY_XACT_LOCK", "PG_NOTIFY", "QUERY_TO_XML", "QUERY_TO_XMLSCHEMA",
+    "QUERY_TO_XML_AND_XMLSCHEMA", "CURSOR_TO_XML", "TS_STAT",
+    // MySQL
+    "GET_LOCK", "RELEASE_LOCK", "RELEASE_ALL_LOCKS",
+    // SQLite (shell/extension functions)
+    "WRITEFILE", "LOAD_EXTENSION", "EDIT", "FTS3_TOKENIZER",
+];
+
+/// Functions that only read but must never run without the person seeing
+/// them first: server files, sleeps, network, large objects (security review #2).
+pub const RISKY_READ_FUNCTIONS: &[&str] = &[
+    // PostgreSQL
+    "PG_READ_FILE", "PG_READ_BINARY_FILE", "PG_LS_DIR", "PG_LS_LOGDIR", "PG_LS_WALDIR", "PG_LS_TMPDIR",
+    "PG_LS_ARCHIVE_STATUSDIR", "PG_STAT_FILE", "PG_FILE_READ", "PG_SLEEP", "PG_SLEEP_FOR", "PG_SLEEP_UNTIL",
+    "DBLINK", "DBLINK_CONNECT", "DBLINK_CONNECT_U", "DBLINK_SEND_QUERY", "DBLINK_GET_RESULT", "DBLINK_OPEN",
+    "DBLINK_FETCH", "LO_GET", "LOREAD", "LO_OPEN", "CURRENT_SETTING", "PG_SHOW_ALL_SETTINGS", "INET_SERVER_ADDR",
+    "GENERATE_SERIES",
+    // MySQL
+    "LOAD_FILE", "SLEEP", "BENCHMARK",
+    // SQLite
+    "READFILE", "RANDOMBLOB", "ZEROBLOB",
+];
+
+fn tokens_upper(s: &str) -> Vec<String> {
+    s.to_ascii_uppercase()
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
+        .collect()
+}
+
 /// True when every statement only reads data (used for read-only connections
-/// and for the AI "run without asking" rule).
+/// and, with `is_safe_auto_query`, for the AI "run without asking" rule).
 pub fn is_read_query(sql: &str) -> bool {
     let stmts = split_statements(sql);
     !stmts.is_empty()
@@ -597,13 +636,21 @@ pub fn is_read_query(sql: &str) -> bool {
                 "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE", "INTO", "GRANT",
                 "REVOKE", "REPLACE", "MERGE", "ATTACH", "VACUUM",
             ];
-            // Conservative: any write keyword anywhere (even inside a string)
-            // makes it count as a write.
+            // Conservative: any write keyword or write function anywhere (even
+            // inside a string or as a column name) makes it count as a write.
+            let _ = &upper;
             ok_first
-                && !upper
-                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                    .any(|t| writes.contains(&t))
+                && !tokens_upper(&s)
+                    .iter()
+                    .any(|t| writes.contains(&t.as_str()) || WRITE_FUNCTIONS.contains(&t.as_str()))
         })
+}
+
+/// What the AI may run without asking: a read query with no file, sleep,
+/// network or large-object functions. The caller must also require a
+/// read-only connection.
+pub fn is_safe_auto_query(sql: &str) -> bool {
+    is_read_query(sql) && !tokens_upper(&strip_comments(sql)).iter().any(|t| RISKY_READ_FUNCTIONS.contains(&t.as_str()))
 }
 
 // ---------------------------------------------------------------- SQLite
@@ -866,7 +913,7 @@ pub fn pg_advice(e: &postgres::Error, cfg: &ConnConfig, user: &str) -> Option<St
     } else if t.contains("failed to lookup") || t.contains("name or service not known") || t.contains("resolve") {
         Some(format!("The host name “{}” could not be found. Check it for typos.", cfg.host))
     } else if t.contains("certificate") {
-        Some("The server's TLS certificate couldn't be verified (self-signed or for another name). If you trust this server, untick “Verify certificate” in the connection — that is what the original app does when no certificate files are given.".into())
+        Some("The server's TLS certificate couldn't be verified (self-signed or for another name). Untick “Verify certificate” only if you trust this network and server: without the check, someone in between could pretend to be the server and read the password.".into())
     } else if t.contains("server does not support tls") || t.contains("tls") && cfg.ssl {
         Some("The server doesn't accept TLS/SSL. Turn off “Use TLS/SSL” in the connection.".into())
     } else {
@@ -874,7 +921,10 @@ pub fn pg_advice(e: &postgres::Error, cfg: &ConnConfig, user: &str) -> Option<St
     }
 }
 
-fn pg_connect(cfg: &ConnConfig, password: &str, user: &str, tls: bool) -> Result<postgres::Client, postgres::Error> {
+/// `verify`: check the server's certificate and host name. Only an explicit
+/// "Use TLS/SSL" with "Verify certificate" unticked turns it off; an automatic
+/// upgrade to TLS always verifies (security review #1).
+fn pg_connect(cfg: &ConnConfig, password: &str, user: &str, tls: bool, verify: bool) -> Result<postgres::Client, postgres::Error> {
     let mut pc = postgres::Config::new();
     pc.host(&cfg.host)
         .port(cfg.port)
@@ -893,14 +943,14 @@ fn pg_connect(cfg: &ConnConfig, password: &str, user: &str, tls: bool) -> Result
     }
     if tls {
         pc.ssl_mode(postgres::config::SslMode::Require);
-        // like the original: without CA/cert files the certificate isn't
-        // checked unless the user asks for verification
         let connector = native_tls::TlsConnector::builder()
-            .danger_accept_invalid_certs(!(cfg.ssl && cfg.ssl_verify))
-            .danger_accept_invalid_hostnames(!(cfg.ssl && cfg.ssl_verify))
+            .danger_accept_invalid_certs(!verify)
+            .danger_accept_invalid_hostnames(!verify)
             .build();
         match connector {
             Ok(c) => pc.connect(postgres_native_tls::MakeTlsConnector::new(c)),
+            // never fall back to plain text: with SslMode::Require and no TLS
+            // the driver refuses to connect
             Err(_) => pc.connect(postgres::NoTls),
         }
     } else {
@@ -910,7 +960,7 @@ fn pg_connect(cfg: &ConnConfig, password: &str, user: &str, tls: bool) -> Result
 
 fn open_pg(cfg: &ConnConfig, password: &str) -> Result<Pg, String> {
     let user = effective_user(cfg);
-    let first = pg_connect(cfg, password, &user, cfg.ssl);
+    let first = pg_connect(cfg, password, &user, cfg.ssl, cfg.ssl && cfg.ssl_verify);
     let mut c = match first {
         Ok(c) => c,
         Err(e) => {
@@ -920,10 +970,25 @@ fn open_pg(cfg: &ConnConfig, password: &str) -> Result<Pg, String> {
                     let m = d.message().to_lowercase();
                     m.contains("encryption") || m.contains("ssl")
                 }).unwrap_or(false);
-            let retried = if needs_tls { pg_connect(cfg, password, &user, true).ok() } else { None };
-            match retried {
-                Some(c) => c,
-                None => {
+            // the upgrade nobody asked for must not weaken anything: the
+            // certificate is always verified here
+            let retried = if needs_tls { Some(pg_connect(cfg, password, &user, true, true)) } else { None };
+            let retry_err = match retried {
+                Some(Ok(c)) => Ok(c),
+                Some(Err(e2)) => Err(Some(e2)),
+                None => Err(None),
+            };
+            match retry_err {
+                Ok(c) => c,
+                Err(e2) => {
+                    if let Some(e2) = e2 {
+                        let t = pg_error_text(&e2);
+                        if t.to_lowercase().contains("certificate") || t.to_lowercase().contains("verify") {
+                            return Err(format!(
+                                "The server only accepts encrypted connections, and its TLS certificate couldn't be verified, so BaseLens didn't send the password.\n\nTurn on “Use TLS/SSL” in the connection. Untick “Verify certificate” only if you trust this network and server (for example a self-signed certificate behind Cloud SQL Proxy).\n\n{t}"
+                            ));
+                        }
+                    }
                     let mut msg = pg_error_text(&e);
                     if let Some(a) = pg_advice(&e, cfg, &user) {
                         msg = format!("{a}\n\n{msg}");

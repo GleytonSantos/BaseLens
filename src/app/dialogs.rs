@@ -455,10 +455,20 @@ impl App {
                             ui.add_enabled(ed.cfg.ssl, egui::Checkbox::new(&mut ed.cfg.ssl_verify, "Verify certificate"));
                         });
                         ui.end_row();
+                        if ed.cfg.ssl && !ed.cfg.ssl_verify {
+                            ui.label("");
+                            ui.label(RichText::new("⚠ Encrypted but not verified (like sslmode=require): someone on the network could pretend to be the server and read the password. Verify the certificate when you can.").small().color(p.warning));
+                            ui.end_row();
+                        }
                     }
                     ui.label("Mode");
                     ui.checkbox(&mut ed.cfg.read_only, "Read-only (block changes)");
                     ui.end_row();
+                    if ed.cfg.read_only && ed.cfg.kind == DbKind::Mysql {
+                        ui.label("");
+                        ui.label(RichText::new("MySQL: best effort. For a guarantee, connect with a user that only has SELECT rights.").small().color(p.text_light));
+                        ui.end_row();
+                    }
                     ui.label("Color");
                     ui.horizontal(|ui| {
                         for s in SWATCHES {
@@ -749,7 +759,7 @@ impl App {
                             ui.end_row();
                         });
                         changed |= ui.checkbox(&mut a.allow_read_only_auto, "Run read-only queries from the AI without asking").changed();
-                        ui.label(RichText::new("Queries that change data always ask first.").small().color(p.text_light));
+                        ui.label(RichText::new("Only on connections marked read-only, and never queries that read server files, sleep or open network links. Queries that change data always ask first.").small().color(p.text_light));
                         ui.label("Extra instructions for the AI");
                         changed |= ui.add(egui::TextEdit::multiline(&mut a.custom_instructions).desired_rows(3).desired_width(f32::INFINITY)).changed();
                         if !su.msg.is_empty() {
@@ -762,8 +772,9 @@ impl App {
                             "• Passwords and API keys are encrypted (ChaCha20-Poly1305) with a master key kept in your system keyring.",
                             "• Settings files are private to your user (permissions 600).",
                             "• No tracking, no telemetry, no account needed.",
-                            "• Read-only connections block any query that changes data.",
-                            "• TLS/SSL with certificate checking for PostgreSQL and MySQL.",
+                            "• Read-only connections block any query that changes data (MySQL: best effort).",
+                            "• TLS/SSL with certificate checking for PostgreSQL and MySQL; an automatic switch to TLS always checks it.",
+                            "• The app-lock PIN is stored as an Argon2id hash.",
                             "• Loading native SQLite extensions is turned off.",
                         ] {
                             ui.label(RichText::new(line).color(p.text));
@@ -771,6 +782,9 @@ impl App {
                         let backend = store::key_backend();
                         let col = if backend == store::KeyBackend::Basic { p.warning } else { p.success };
                         ui.label(RichText::new(format!("Master key stored in: {}", backend.label())).color(col));
+                        if backend == store::KeyBackend::Basic {
+                            ui.label(RichText::new("⚠ No system keyring was found, so the master key is a private file next to your encrypted settings. Anyone who can read your home folder (a copied disk, a backup) can decrypt your passwords. Install and unlock a keyring (GNOME Keyring or KWallet) to protect them.").small().color(p.warning));
+                        }
                         ui.add_space(8.0);
                         ui.label(RichText::new("App lock").strong());
                         if s.pin_hash.is_empty() {
@@ -793,8 +807,8 @@ impl App {
                                 } else if su.pin1 != su.pin2 {
                                     su.msg = "The two PINs are different.".into();
                                 } else {
-                                    s.pin_salt = store::new_salt();
-                                    s.pin_hash = store::hash_pin(&su.pin1, &s.pin_salt);
+                                    s.pin_salt = String::new();
+                                    s.pin_hash = store::hash_pin_argon2(&su.pin1);
                                     su.pin1.clear();
                                     su.pin2.clear();
                                     su.msg = "PIN saved.".into();

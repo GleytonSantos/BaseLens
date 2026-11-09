@@ -888,6 +888,7 @@ impl App {
         // AI answers
         let mut auto_runs = Vec::new();
         let auto = self.settings.ai.allow_read_only_auto;
+        let conns_ro: HashMap<u64, bool> = self.open.iter().map(|o| (o.sid, o.cfg.read_only)).collect();
         for t in &mut self.tabs {
             if let TabKind::Ai(a) = &mut t.kind {
                 let got = a.rx.as_ref().and_then(|rx| rx.try_recv().ok());
@@ -901,7 +902,11 @@ impl App {
                             let idx = a.msgs.len() - 1;
                             if auto {
                                 if let Some(b) = blocks.first() {
-                                    if db::is_read_query(b) {
+                                    // only on a connection the server keeps
+                                    // read-only, and never file/sleep/network
+                                    // functions (security review #2)
+                                    let ro = conns_ro.get(&t.conn).copied().unwrap_or(false);
+                                    if ro && db::is_safe_auto_query(b) {
                                         auto_runs.push((t.id, t.conn, idx, b.clone()));
                                     }
                                 }

@@ -292,7 +292,29 @@ pub fn decrypt(stored: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Salted, stretched hash for the app-lock PIN.
+/// Hash for the app-lock PIN: Argon2id (memory-hard, 19 MiB, 2 passes, the
+/// OWASP baseline) in PHC form `$argon2id$...`, with its own random salt.
+pub fn hash_pin_argon2(pin: &str) -> String {
+    use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
+    let salt = SaltString::generate(&mut OsRng);
+    argon2::Argon2::default().hash_password(pin.as_bytes(), &salt).map(|h| h.to_string()).unwrap_or_default()
+}
+
+/// Checks a PIN against a stored hash. Returns (matches, needs_upgrade):
+/// hashes from older versions (SHA-256 x 50 000) still unlock, and are then
+/// replaced by an Argon2id hash.
+pub fn verify_pin(pin: &str, salt: &str, stored: &str) -> (bool, bool) {
+    if stored.starts_with("$argon2") {
+        use argon2::password_hash::{PasswordHash, PasswordVerifier};
+        let ok = PasswordHash::new(stored).map(|h| argon2::Argon2::default().verify_password(pin.as_bytes(), &h).is_ok()).unwrap_or(false);
+        (ok, false)
+    } else {
+        let ok = !stored.is_empty() && hash_pin(pin, salt) == stored;
+        (ok, ok)
+    }
+}
+
+/// Old PIN hash (SHA-256 stretched 50 000 times), kept to read older settings.
 pub fn hash_pin(pin: &str, salt: &str) -> String {
     let mut h = Sha256::digest(format!("{salt}:{pin}").as_bytes()).to_vec();
     for _ in 0..50_000 {

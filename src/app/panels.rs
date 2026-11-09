@@ -330,8 +330,17 @@ impl App {
                         if o.cfg.read_only {
                             ui.label(RichText::new("READ-ONLY").small().strong().color(p.warning));
                         }
-                        if o.cfg.ssl {
+                        if o.cfg.ssl && o.cfg.ssl_verify {
                             ui.label(RichText::new("🔒 TLS").small().color(p.success));
+                        } else if o.cfg.ssl {
+                            ui.label(RichText::new("🔓 TLS not verified").small().color(p.warning)).on_hover_text(
+                                "Encrypted, but the server's certificate isn't checked: someone on the network could pretend to be the server. Tick “Verify certificate” in the connection when possible.",
+                            );
+                        }
+                        if o.cfg.read_only && o.cfg.kind == crate::db::DbKind::Mysql {
+                            ui.label(RichText::new("best effort").small().color(p.text_lighter)).on_hover_text(
+                                "MySQL read-only: BaseLens only sends reads and asks the server for read-only transactions, but MySQL doesn't block every schema change that way. For a guarantee, use a MySQL user with only SELECT rights.",
+                            );
                         }
                     } else {
                         ui.label(RichText::new("Not connected").small().color(p.text_light));
@@ -983,7 +992,14 @@ impl App {
                 r.request_focus();
                 let go = ui.add(egui::Button::new(RichText::new("Unlock").color(p.on_primary)).fill(p.primary)).clicked() || ui.input(|i| i.key_pressed(Key::Enter));
                 if go {
-                    if store::hash_pin(&self.pin_input, &self.settings.pin_salt) == self.settings.pin_hash {
+                    let (ok, upgrade) = store::verify_pin(&self.pin_input, &self.settings.pin_salt, &self.settings.pin_hash);
+                    if ok {
+                        if upgrade {
+                            // an old SHA-256 hash: replace it with Argon2id
+                            self.settings.pin_hash = store::hash_pin_argon2(&self.pin_input);
+                            self.settings.pin_salt = String::new();
+                            store::save("settings.json", &self.settings);
+                        }
                         self.locked = false;
                         self.pin_error = false;
                         self.last_activity = Instant::now();

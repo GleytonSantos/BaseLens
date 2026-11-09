@@ -47,8 +47,28 @@ pub fn log(line: &str) {
     let p = log_path();
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
+        // the log holds SQL text: private folder (0700) and file (0600)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700));
+        }
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(&p);
+    #[cfg(unix)]
+    {
+        // a log made by an older version keeps its old mode until fixed here
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+    }
+    if let Ok(mut f) = file {
         let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let _ = writeln!(f, "{} :{:02}.{:03} {line}", crate::app::now_string(), (ms / 1000) % 60, ms % 1000);
     }
