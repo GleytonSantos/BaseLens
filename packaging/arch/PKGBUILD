@@ -5,7 +5,7 @@
 # (scripts/package-arch.sh does the same and copies the package to dist/)
 
 pkgname=baselens
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='See into every database: a free, private desktop editor for SQLite, PostgreSQL and MySQL'
 arch=('x86_64' 'aarch64')

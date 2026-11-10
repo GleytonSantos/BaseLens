@@ -1,6 +1,6 @@
 [package]
 name = "baselens"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "BaseLens — see into every database. A free, private desktop database editor."
 authors = ["Gleyton Santos <gleyton.santos@estantemagica.com.br>"]
