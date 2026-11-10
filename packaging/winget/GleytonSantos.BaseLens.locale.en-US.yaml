@@ -1,5 +1,5 @@
 PackageIdentifier: GleytonSantos.BaseLens
-PackageVersion: 0.1.0
+PackageVersion: 0.1.1
 PackageLocale: en-US
 Publisher: Gleyton Santos
 PublisherUrl: https://github.com/GleytonSantos
@@ -16,6 +16,6 @@ Tags:
   - postgresql
   - mysql
   - sqlite
-ReleaseNotesUrl: https://github.com/GleytonSantos/BaseLens/releases/tag/v0.1.0
+ReleaseNotesUrl: https://github.com/GleytonSantos/BaseLens/releases/tag/v0.1.1
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

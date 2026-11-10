@@ -4,13 +4,13 @@
 class Baselens < Formula
   desc "Free, private desktop editor for SQLite, PostgreSQL and MySQL"
   homepage "https://github.com/GleytonSantos/BaseLens"
-  version "0.1.0"
+  version "0.1.1"
   license "MIT"
 
   on_linux do
     on_intel do
       url "https://github.com/GleytonSantos/BaseLens/releases/download/v#{version}/baselens-#{version}-linux-x86_64.tar.gz"
-      sha256 "610bc3c482ba6b5014b1a0aa008e08116cee4de6bd4f9117ee4965bfe71c9e72"
+      sha256 "705522c24527a33fb3af8f6f4ca98cc18bc1b812346a3fd9473c6629fd5f1c42"
     end
   end
 

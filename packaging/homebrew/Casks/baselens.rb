@@ -3,7 +3,7 @@
 #   brew install --cask gleytonsantos/baselens/baselens
 # scripts/update-channels.sh <version> fills the version and checksum.
 cask "baselens" do
-  version "0.1.0"
+  version "0.1.1"
   sha256 :no_check
 
   url "https://github.com/GleytonSantos/BaseLens/releases/download/v#{version}/BaseLens-#{version}-macos-universal.dmg"

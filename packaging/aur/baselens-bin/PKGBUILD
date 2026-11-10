@@ -3,7 +3,7 @@
 # AUR package that installs the prebuilt release (no Rust toolchain needed).
 # scripts/update-channels.sh <version> fills pkgver and the checksum.
 pkgname=baselens-bin
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='See into every database: a free, private desktop editor for SQLite, PostgreSQL and MySQL (prebuilt)'
 arch=('x86_64')
@@ -16,7 +16,7 @@ provides=('baselens')
 conflicts=('baselens')
 options=('!strip' '!debug')
 source=("$url/releases/download/v$pkgver/baselens-$pkgver-linux-x86_64.tar.gz")
-sha256sums=('610bc3c482ba6b5014b1a0aa008e08116cee4de6bd4f9117ee4965bfe71c9e72')
+sha256sums=('705522c24527a33fb3af8f6f4ca98cc18bc1b812346a3fd9473c6629fd5f1c42')
 
 package() {
     cd "baselens-$pkgver-linux-x86_64"
