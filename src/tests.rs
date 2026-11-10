@@ -489,6 +489,23 @@ fn sqlite_plan_from_a_real_database() {
             assert!(n.count() >= 3, "{n:?}");
             let labels: Vec<String> = n.children.iter().map(|c| c.label.clone()).collect();
             assert!(labels.iter().any(|l| l == "SCAN") && labels.iter().any(|l| l == "SEARCH"), "{labels:?}");
+            // verdicts from the real SQLite's own words
+            use crate::plan::Verdict;
+            let vs: Vec<Option<Verdict>> = n.children.iter().map(|c| c.verdict.as_ref().map(|v| v.0)).collect();
+            assert!(vs.contains(&Some(Verdict::FullScan)) && vs.contains(&Some(Verdict::Good)) && vs.contains(&Some(Verdict::Extra)), "{n:?}");
+        }
+        _ => panic!(),
+    }
+    // with an index the full scan becomes an index search
+    assert!(h.send(Request::Query { tag: 3, sql: "CREATE INDEX o_total ON o(total, c_id)".into(), max_rows: 10, sent: Instant::now() }));
+    let _ = h.rx.recv().unwrap();
+    let q = crate::plan::explain_sql(DbKind::Sqlite, "SELECT c_id FROM o WHERE total > 5", false);
+    assert!(h.send(Request::Query { tag: 4, sql: q, max_rows: 100, sent: Instant::now() }));
+    match h.rx.recv().unwrap() {
+        Response::QueryDone { results, .. } => {
+            let n = crate::plan::parse(DbKind::Sqlite, &results.unwrap()[0]).unwrap();
+            assert_eq!(n.label, "SEARCH", "{n:?}");
+            assert_eq!(n.verdict.as_ref().map(|v| v.0), Some(crate::plan::Verdict::Good), "{n:?}");
         }
         _ => panic!(),
     }

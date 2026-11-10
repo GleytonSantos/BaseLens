@@ -400,3 +400,23 @@ Used in the build (`db.rs::interleave_families`, `autoselect_address`): when a h
 - **Export** (`export.rs`): CSV, JSON, Excel XLSX (numbers as numbers, header bold and frozen, Excel's limits 1 048 576 rows × 16 384 columns × 32 767 characters per cell respected), SQL INSERT statements (quoted per database, PostgreSQL bytes as `'\\x…'::bytea`), Markdown (| and line breaks escaped), HTML (escaped, NULL marked) and XML (column names made valid element names, NULL as `null="true"`).
 
 Still to come from the same review: deep object browser (functions, triggers, indexes, sequences, roles with DDL), table designer, schema/data compare, import (CSV/XLSX → table), fake data, backup/restore, session/lock manager, more engines.
+
+
+## Round 32 — decompiled: how SQLite words its query plan, used to judge each step
+
+The original carries a full SQLite. Read with native_function_pseudocode:
+
+- **`sqlite3WhereExplainOneScan` 0x6921750** (found from "AUTOMATIC COVERING INDEX" at 0x11a6d8d): builds each plan line as `"%s %S%s"` with the verb **"SEARCH"** when the loop uses index or rowid constraints and **"SCAN"** when it walks everything, the table, and " EXISTS" for EXISTS-to-IN loops. Then:
+  - rowid loops: `" USING INTEGER PRIMARY KEY (rowid=?)"`, or ranges `">? AND rowid<?"`;
+  - virtual tables: `" VIRTUAL TABLE INDEX %d:%s"`;
+  - indexes: `" USING "` + **"PRIMARY KEY"** (WITHOUT ROWID primary key) / **"AUTOMATIC PARTIAL COVERING INDEX"** (flag bit 17) / **"AUTOMATIC COVERING INDEX"** (bit 14) / **"COVERING INDEX %s"** / **"INDEX %s"**, then the constrained columns `" (a=? AND b>? AND b<?)"` (`"<expr>"` for expression columns, `"ANY(%s)"` for skip-scan);
+  - `" LEFT-JOIN"` for outer joins.
+- **0x68c6ca0** (`sqlite3WhereBegin`/select planner): `"SCAN %s%s%s"`, `"SCAN %d CONSTANT ROW%s"`, `"USE TEMP B-TREE FOR %s"`, `"USE TEMP B-TREE FOR %sORDER BY"`, `"USE TEMP B-TREE FOR LAST %d TERMS OF "`; `" USING COVERING INDEX "` at 0x13c7fb1.
+
+Used in the build (`plan.rs::sqlite_verdict`): SQLite gives no costs, so each SQLite plan step now gets a verdict from those words, shown as the bar's colour with a one-line reason:
+- **good** (green): SEARCH using INTEGER PRIMARY KEY or PRIMARY KEY (direct lookup), SEARCH using COVERING INDEX (the table isn't read);
+- **fine**: SEARCH using INDEX (lists the constrained columns), SCAN using an index (index order, no sort), SCAN CONSTANT ROW;
+- **extra work** (amber): AUTOMATIC [PARTIAL] COVERING INDEX (a temporary index built for this query — a permanent one saves it), USE TEMP B-TREE FOR … (a sort an index in that order would avoid);
+- **full scan** (red): SCAN of a table with no USING — reads every row.
+
+Checked against a real SQLite (the bundled one): a join with ORDER BY shows SCAN o (red), SEARCH c USING INTEGER PRIMARY KEY (green) and the temp B-tree (amber); after `CREATE INDEX o_total ON o(total, c_id)` the same filter becomes SEARCH … USING COVERING INDEX (green). Tests `sqlite_verdicts_follow_the_plan_words`, `sqlite_plan_from_a_real_database`.

@@ -23,6 +23,56 @@ pub struct PlanNode {
     pub actual_ms: Option<f64>,
     pub actual_rows: Option<f64>,
     pub children: Vec<PlanNode>,
+    /// how good this step is, with a plain-language reason (SQLite, which
+    /// gives no costs)
+    pub verdict: Option<(Verdict, String)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// a direct lookup, or answered from an index alone
+    Good,
+    /// fine
+    Ok,
+    /// extra work SQLite does for this query (temporary index or B-tree)
+    Extra,
+    /// reads every row of the table
+    FullScan,
+}
+
+/// SQLite's plan lines, as written by `sqlite3WhereExplainOneScan` in the
+/// original (0x6921750): the verb is "SEARCH" when the loop uses an index
+/// or rowid constraint and "SCAN" when it walks everything; then " USING "
+/// and one of "INTEGER PRIMARY KEY (rowid=?)", "PRIMARY KEY", "COVERING INDEX
+/// name", "INDEX name", "AUTOMATIC COVERING INDEX", "AUTOMATIC PARTIAL
+/// COVERING INDEX" or "VIRTUAL TABLE INDEX n:str", the constrained columns
+/// "(a=? AND b>?)", and " LEFT-JOIN". Sorting shows up as "USE TEMP B-TREE FOR
+/// ORDER BY / GROUP BY / DISTINCT / LAST n TERMS OF ORDER BY" (0x68c6ca0).
+pub fn sqlite_verdict(label: &str, detail: &str) -> Option<(Verdict, String)> {
+    let d = detail.to_ascii_uppercase();
+    let what = detail.split(" USING ").next().unwrap_or(detail).trim();
+    let cols = detail.split_once(" (").map(|(_, c)| c.trim_end_matches(')').to_string()).unwrap_or_default();
+    Some(match label {
+        "SEARCH" if d.contains("USING INTEGER PRIMARY KEY") || d.contains("USING PRIMARY KEY") => (Verdict::Good, format!("Direct lookup of {what} by its primary key.")),
+        "SEARCH" if d.contains("USING COVERING INDEX") => (Verdict::Good, format!("Answered from an index alone ({cols}); the table itself isn't read.")),
+        "SEARCH" if d.contains("AUTOMATIC") => (
+            Verdict::Extra,
+            format!("SQLite builds a temporary index on {what} for this query ({cols}). A permanent index on those columns would save that work every time."),
+        ),
+        "SEARCH" => (Verdict::Ok, format!("Uses an index to find rows of {what} ({cols}).")),
+        "SCAN" if d.contains("CONSTANT ROW") => (Verdict::Ok, "No table to read.".into()),
+        "SCAN" if d.contains("USING COVERING INDEX") => (Verdict::Ok, format!("Reads a whole index of {what}, but never the table.")),
+        "SCAN" if d.contains("USING") => (Verdict::Ok, format!("Reads {what} in index order (avoids sorting).")),
+        "SCAN" => (
+            Verdict::FullScan,
+            format!("Reads every row of {what}. If the query filters or joins on some columns, an index on them lets SQLite search instead."),
+        ),
+        "USE" if d.contains("TEMP B-TREE") => (
+            Verdict::Extra,
+            format!("Sorts in a temporary B-tree ({}). An index in that order would avoid it.", detail.trim_start_matches("TEMP B-TREE FOR ").to_lowercase()),
+        ),
+        _ => return None,
+    })
 }
 
 impl PlanNode {
@@ -113,6 +163,7 @@ pub fn parse_pg_json(text: &str) -> Result<PlanNode, String> {
             actual_ms: f("Actual Total Time").map(|t| t * loops),
             actual_rows: f("Actual Rows").map(|r| r * loops),
             children: p.get("Plans").and_then(|x| x.as_array()).map(|a| a.iter().map(node).collect()).unwrap_or_default(),
+            verdict: None,
         }
     }
     Ok(node(plan))
@@ -154,6 +205,7 @@ pub fn parse_mysql_tree(text: &str) -> Result<PlanNode, String> {
             actual_ms: act.find("..").and_then(|i| act[i + 2..].split_whitespace().next()).and_then(|t| t.parse::<f64>().ok()).map(|t| t * loops),
             actual_rows: num_after(act, "rows=").map(|r| r * loops),
             children: vec![],
+            verdict: None,
         };
         while let Some((d, _)) = stack.last() {
             if *d >= depth {
@@ -198,7 +250,8 @@ pub fn parse_sqlite(r: &QueryResult) -> Result<PlanNode, String> {
                     Some((a, b)) if a.chars().all(|c| c.is_ascii_uppercase()) => (a.to_string(), b.to_string()),
                     _ => (d.clone(), String::new()),
                 };
-                PlanNode { label, detail, children: build(items, *id), ..Default::default() }
+                let verdict = sqlite_verdict(&label, &detail);
+                PlanNode { label, detail, verdict, children: build(items, *id), ..Default::default() }
             })
             .collect()
     }
@@ -243,14 +296,24 @@ fn node_ui(ui: &mut egui::Ui, n: &PlanNode, p: &Palette, max: f64, depth: usize,
     let share = n.cost.map(|c| (c / max).clamp(0.0, 1.0)).unwrap_or(0.0) as f32;
     // the share of the cost spent in this step itself, not its children
     let own = n.cost.map(|c| c - n.children.iter().filter_map(|k| k.cost).sum::<f64>()).unwrap_or(0.0);
-    let hot = n.cost.is_some() && own / max > 0.5;
-    let col: Color32 = if hot { p.danger } else if share > 0.25 { p.warning } else { p.primary };
+    let verdict = n.verdict.as_ref().map(|v| v.0);
+    let hot = (n.cost.is_some() && own / max > 0.5) || verdict == Some(Verdict::FullScan);
+    let col: Color32 = if hot { p.danger } else if share > 0.25 || verdict == Some(Verdict::Extra) { p.warning } else { p.primary };
     ui.horizontal(|ui| {
         ui.add_space(depth as f32 * 18.0);
         ui.label(RichText::new(if n.children.is_empty() { "•" } else { "▾" }).color(p.text_lighter));
         let (r, _) = ui.allocate_exact_size(Vec2::new(60.0, 8.0), Sense::hover());
         ui.painter().rect_filled(r, 3.0, p.border);
-        if share > 0.0 {
+        if let Some(v) = verdict {
+            // no costs (SQLite): the bar shows the verdict instead
+            let c = match v {
+                Verdict::Good => p.success,
+                Verdict::Ok => p.primary,
+                Verdict::Extra => p.warning,
+                Verdict::FullScan => p.danger,
+            };
+            ui.painter().rect_filled(r, 3.0, c);
+        } else if share > 0.0 {
             let mut f = r;
             f.set_width((r.width() * share).max(2.0));
             ui.painter().rect_filled(f, 3.0, col);
@@ -276,6 +339,14 @@ fn node_ui(ui: &mut egui::Ui, n: &PlanNode, p: &Palette, max: f64, depth: usize,
             ui.label(RichText::new(facts.join(" · ")).small().color(p.text_lighter));
         }
     });
+    if let Some((v, why)) = &n.verdict {
+        if *v != Verdict::Ok {
+            ui.horizontal(|ui| {
+                ui.add_space(depth as f32 * 18.0 + 86.0);
+                ui.label(RichText::new(why).small().italics().color(if *v == Verdict::Good { p.success } else { col }));
+            });
+        }
+    }
     for (i, c) in n.children.iter().enumerate() {
         path.push(i);
         node_ui(ui, c, p, max, depth + 1, path);
@@ -337,6 +408,24 @@ mod tests {
         assert_eq!(n.children.len(), 3);
         assert_eq!(n.children[1].label, "SEARCH");
         assert_eq!(n.children[1].detail, "c USING INTEGER PRIMARY KEY (rowid=?)");
+        assert_eq!(n.children[0].verdict.as_ref().unwrap().0, Verdict::FullScan);
+        assert_eq!(n.children[1].verdict.as_ref().unwrap().0, Verdict::Good);
+        assert_eq!(n.children[2].verdict.as_ref().unwrap().0, Verdict::Extra);
+    }
+
+    #[test]
+    fn sqlite_verdicts_follow_the_plan_words() {
+        let v = |l: &str, d: &str| sqlite_verdict(l, d).map(|x| x.0);
+        assert_eq!(v("SEARCH", "o USING COVERING INDEX o_total (total>?)"), Some(Verdict::Good));
+        assert_eq!(v("SEARCH", "o USING INDEX o_c (c_id=?)"), Some(Verdict::Ok));
+        assert_eq!(v("SEARCH", "o USING AUTOMATIC COVERING INDEX (c_id=?)"), Some(Verdict::Extra));
+        assert_eq!(v("SEARCH", "o USING AUTOMATIC PARTIAL COVERING INDEX (c_id=?)"), Some(Verdict::Extra));
+        assert_eq!(v("SEARCH", "t USING PRIMARY KEY (k=?)"), Some(Verdict::Good));
+        assert_eq!(v("SCAN", "o USING INDEX o_total"), Some(Verdict::Ok));
+        assert_eq!(v("SCAN", "o"), Some(Verdict::FullScan));
+        assert_eq!(v("SCAN", "CONSTANT ROW"), Some(Verdict::Ok));
+        assert_eq!(v("USE", "TEMP B-TREE FOR ORDER BY"), Some(Verdict::Extra));
+        assert!(sqlite_verdict("SEARCH", "o USING INDEX o_c (c_id=?)").unwrap().1.contains("c_id=?"));
     }
 
     #[test]

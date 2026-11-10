@@ -934,6 +934,30 @@
       "group": "editor",
       "value": 0.5,
       "source": "BaseLens design (plan.rs)"
+    },
+    {
+      "name": "SQLite plan verb when constraints are used",
+      "group": "editor",
+      "value": "SEARCH",
+      "source": "sqlite3WhereExplainOneScan at 0x6921750"
+    },
+    {
+      "name": "SQLite plan verb for a walk of everything",
+      "group": "editor",
+      "value": "SCAN",
+      "source": "sqlite3WhereExplainOneScan at 0x6921750"
+    },
+    {
+      "name": "SQLite temporary index wording",
+      "group": "editor",
+      "value": "AUTOMATIC COVERING INDEX",
+      "source": "sqlite3WhereExplainOneScan at 0x6921750 (string 0x11a6d8d)"
+    },
+    {
+      "name": "SQLite sort wording",
+      "group": "editor",
+      "value": "USE TEMP B-TREE FOR",
+      "source": "function 0x68c6ca0 (string 0xf93339)"
     }
   ]
 }
