@@ -420,3 +420,15 @@ Used in the build (`plan.rs::sqlite_verdict`): SQLite gives no costs, so each SQ
 - **full scan** (red): SCAN of a table with no USING — reads every row.
 
 Checked against a real SQLite (the bundled one): a join with ORDER BY shows SCAN o (red), SEARCH c USING INTEGER PRIMARY KEY (green) and the temp B-tree (amber); after `CREATE INDEX o_total ON o(total, c_id)` the same filter becomes SEARCH … USING COVERING INDEX (green). Tests `sqlite_verdicts_follow_the_plan_words`, `sqlite_plan_from_a_real_database`.
+
+
+## Round 33 — offline syntax check (sqlparser), lint and format (sqruff)
+
+`src/sql.rs` wraps both; the rest of the app only calls it.
+
+- **Dialects**: PostgreSQL → sqlparser `PostgreSqlDialect` / sqruff `postgres`; SQLite → `SQLiteDialect` / `sqlite`; MySQL → `MySqlDialect` / `mysql`.
+- **Syntax check** (`validate`, sqlparser 0.64): runs 600 ms after the last key (`VALIDATE_DEBOUNCE_MS`), only when the text changed (hash) and is at most 200 000 bytes (`VALIDATE_MAX_BYTES`). The error's "Line: l, Column: c" becomes an underline (red, 2 px) on the word there (`widgets::sql_job_marked`) and a line under the editor ("⚠ line 1, col 10: Expected: end of statement, found: frm"); "✓ syntax OK (PostgreSQL)" otherwise. It never blocks running: the server decides (sqlparser doesn't know every extension). Empty text and comment-only text are fine.
+- **Lint** (`lint`, sqruff 0.44 core rules, run on another thread): Ctrl+Shift+I, the "✓ Lint" button or the command palette. Rules LT12 (file must end with a newline — an editor buffer isn't a file) and LT05 (line length reflow) are left out. Findings list line:col (click to go there), rule code (hover for its name), description and whether it's fixable; parse problems show as "PRS". "Fix N automatically" applies sqruff's fixes to the editor text (undo with Ctrl+Z); unreadable SQL is never changed.
+- **Format** (Ctrl+Shift+F): BaseLens's layout (one clause per line, keyword case kept) and then sqruff's fixes on top, for text up to 20 000 bytes (`FORMAT_SQRUFF_MAX_BYTES`, sqruff runs on the window's thread here); larger text, SQL sqruff can't read, or a build without the linter keep BaseLens's layout alone. Formatting twice gives the same text.
+- **Size**: release binary 25.9 MB → 32.4 MB with sqlparser → 59.1 MB with sqruff (gzip 10.9 → 13.3 → 21.2 MB); sqruff brings all 26 of its dialects and can't be trimmed from outside. `--no-default-features` drops the `lint` feature (lint/fix report that they aren't in this build).
+- Tests: `validates_per_dialect`, `underlines_the_word_at_the_error`, `lints_and_fixes`, `format_is_stable`; robot step 21 types `select * frm orders` and checks the warning appears.

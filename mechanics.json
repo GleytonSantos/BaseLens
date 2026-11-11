@@ -958,6 +958,24 @@
       "group": "editor",
       "value": "USE TEMP B-TREE FOR",
       "source": "function 0x68c6ca0 (string 0xf93339)"
+    },
+    {
+      "name": "Syntax check pause after typing (ms)",
+      "group": "editor",
+      "value": 600,
+      "source": "BaseLens design (src/sql.rs) VALIDATE_DEBOUNCE_MS"
+    },
+    {
+      "name": "Syntax check max text (bytes)",
+      "group": "editor",
+      "value": 200000,
+      "source": "BaseLens design (src/sql.rs) VALIDATE_MAX_BYTES"
+    },
+    {
+      "name": "Format through sqruff max text (bytes)",
+      "group": "editor",
+      "value": 20000,
+      "source": "BaseLens design (src/sql.rs) FORMAT_SQRUFF_MAX_BYTES"
     }
   ]
 }
