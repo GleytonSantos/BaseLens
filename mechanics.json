@@ -994,6 +994,12 @@
       "group": "editor",
       "value": "near \"",
       "source": "sqlite3RunParser 0x685aca0 (string 0xfa43a4, near \"%T\": syntax error)"
+    },
+    {
+      "name": "Properties rows per tab",
+      "group": "properties",
+      "value": 5000,
+      "source": "BaseLens design (db.rs PROPS_MAX_ROWS)"
     }
   ]
 }

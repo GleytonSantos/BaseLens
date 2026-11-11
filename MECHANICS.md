@@ -444,3 +444,27 @@ Read with native_function_pseudocode on **`sqlite3RunParser` 0x685aca0** (found 
 - Errors are logged as `"%s in \"%s\""` (message in SQL). Name problems ("no such table", "no such column") come later, from name resolution, not from this parser.
 
 Used in the build (`sql.rs::validate_sqlite`): for SQLite connections the editor's syntax check no longer uses sqlparser's SQLite dialect but **SQLite itself** (the bundled engine): each statement is prepared on an empty in-memory database (preparing never runs anything, so DDL like `CREATE`/`DROP` is safe), and only those three messages count as syntax errors — unknown tables and columns are ignored offline. The position comes from SQLite's error offset (`sqlite3_error_offset`); "incomplete input" points at the end of the statement. So the warning in the editor is word for word what SQLite will say, e.g. `near "frm": syntax error` at line 2, col 10, and SQLite-only syntax (`INSERT OR REPLACE … RETURNING`, `PRAGMA`, `INDEXED BY`) is judged by the real grammar. PostgreSQL and MySQL keep sqlparser. Test `sqlite_uses_its_own_parser_and_words`.
+
+
+## Round 35 — Properties panel (DBeaver-style)
+
+`src/props.rs` + "ⓘ Properties" in the table tab (and right-click a table in the navigator → Properties). Each tab is one read-only catalog query, run on the schema connection (`Request::Properties`, the second connection on PostgreSQL/MySQL, so it never waits behind a query); a tab that fails (old server, missing privilege) shows its error and the others still load; at most 5 000 rows per tab (`PROPS_MAX_ROWS`). Table and schema names go into the queries only as quoted literals/identifiers.
+
+| Tab | PostgreSQL | SQLite | MySQL |
+|---|---|---|---|
+| Columns | `pg_attribute` + `pg_attrdef`, `format_type`, `col_description` | `pragma_table_xinfo` (incl. generated/hidden) | `information_schema.columns` |
+| Constraints | `pg_constraint` + `pg_get_constraintdef` | (in the DDL) | `information_schema.table_constraints` |
+| Foreign keys | `pg_constraint` contype f | `pragma_foreign_key_list` | `key_column_usage` + `referential_constraints` |
+| References (other tables pointing here) | `pg_constraint.confrelid` | every table's `pragma_foreign_key_list` | `key_column_usage.referenced_table_name` |
+| Indexes | `pg_index` + `pg_get_indexdef`, size, from-constraint flag | `pragma_index_list` + `sqlite_master` | `information_schema.statistics` |
+| Triggers | `pg_trigger` + `pg_get_triggerdef` | `sqlite_master` type trigger | `information_schema.triggers` |
+| Partitions | `pg_inherits` + `relpartbound` | — | `information_schema.partitions` |
+| Rules / Policies | `pg_rules` / `pg_policy` | — | — |
+| Dependencies | views via `pg_depend` + `pg_rewrite` | views whose SQL mentions it | — |
+| Permissions | `role_table_grants` | — | `table_privileges` |
+| Info | row estimate, sizes, owner, comment, row security | row count, type | rows, engine, sizes, collation |
+| DDL | built from the tabs (below) | `sqlite_master.sql` of table, indexes, triggers | `SHOW CREATE TABLE` / `VIEW` |
+
+PostgreSQL has no single "CREATE TABLE source", so the DDL is assembled: columns with type, DEFAULT and NOT NULL; every constraint as `CONSTRAINT name <pg_get_constraintdef>` (PostgreSQL 18's NOT NULL constraints skipped, they're on the columns); indexes that don't come from a constraint (`pg_get_indexdef`); triggers; `COMMENT ON TABLE/COLUMN`. Views: `CREATE OR REPLACE VIEW … AS pg_get_viewdef(…, true)`. Checked live: the generated DDL of `orders` re-creates the table in a scratch schema (inside a rolled-back transaction).
+
+Found and fixed on the way: the statement splitter cut `CREATE TRIGGER … BEGIN …; …; END` at the first `;` (so creating a trigger from the editor failed). Inside a CREATE [TEMP] TRIGGER, after its BEGIN, `;` no longer ends the statement until BEGIN/CASE … END blocks are closed (`trigger_body_open`). Tests `sqlite_properties_from_a_real_database`, `trigger_bodies_stay_whole`, props unit tests, live PostgreSQL in `live_pg`; robot step 22 opens the panel on the demo table.
