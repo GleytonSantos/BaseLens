@@ -15,6 +15,12 @@ RUN rustup target add x86_64-pc-windows-gnu \
 RUN curl -fsSL -o /usr/local/bin/appimagetool \
         https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
     && chmod +x /usr/local/bin/appimagetool
+# the AppImage runtime, kept in the image so packaging doesn't depend on a
+# download each time (appimagetool would fetch it on every run)
+RUN mkdir -p /usr/local/share/appimage \
+    && (curl -fsSL --retry 5 -o /usr/local/share/appimage/runtime-x86_64 \
+        https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64 \
+        || echo "AppImage runtime not downloaded; scripts/build-all.sh provides it")
 ENV APPIMAGE_EXTRACT_AND_RUN=1
 
 # the build runs as the host user; let it use the toolchain

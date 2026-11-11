@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the Linux binary and the .deb, .rpm, AppImage and .tar.gz into dist/.
+# Builds the Linux binary and the .deb, .rpm, .tar.gz and AppImage into dist/.
 # Meant for the Debian 12 build image (packaging/docker/Dockerfile) so the
 # binary runs on older distributions too.
 set -euo pipefail
@@ -20,6 +20,15 @@ cargo deb --no-build --no-strip --output "$DIST/"
 echo "==> .rpm"
 cargo generate-rpm --target-dir "$TARGET_DIR" --output "$DIST/"
 
+# the tarball comes before the AppImage: Flatpak is built from it, and the
+# AppImage step is the only one that may need the network
+echo "==> .tar.gz"
+TGZ="$(mktemp -d)/baselens-$VERSION-linux-$ARCH"
+mkdir -p "$TGZ"
+install -m755 "$BIN" "$TGZ/baselens"
+cp -r assets LICENSE README.md "$TGZ/"
+tar -C "$(dirname "$TGZ")" -czf "$DIST/baselens-$VERSION-linux-$ARCH.tar.gz" "$(basename "$TGZ")"
+
 echo "==> AppImage"
 APPDIR="$(mktemp -d)/BaseLens.AppDir"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/metainfo"
@@ -36,15 +45,17 @@ done
 cp assets/baselens.desktop "$APPDIR/baselens.desktop"
 cp assets/baselens-256.png "$APPDIR/baselens.png"
 install -m755 packaging/linux/AppRun "$APPDIR/AppRun"
+# the AppImage runtime: from the build image, or one the host downloaded into
+# target/appimage/ (scripts/build-all.sh does); otherwise appimagetool fetches it
+RUNTIME_ARGS=()
+for f in "/usr/local/share/appimage/runtime-$ARCH" "target/appimage/runtime-$ARCH"; do
+    if [ -s "$f" ]; then
+        RUNTIME_ARGS=(--runtime-file "$f")
+        break
+    fi
+done
 # built beside and renamed into place, so a copy that is open can't block it
-ARCH="$ARCH" appimagetool --no-appstream "$APPDIR" "$DIST/.BaseLens-$VERSION-$ARCH.AppImage.new"
+ARCH="$ARCH" appimagetool --no-appstream "${RUNTIME_ARGS[@]}" "$APPDIR" "$DIST/.BaseLens-$VERSION-$ARCH.AppImage.new"
 mv -f "$DIST/.BaseLens-$VERSION-$ARCH.AppImage.new" "$DIST/BaseLens-$VERSION-$ARCH.AppImage"
-
-echo "==> .tar.gz"
-TGZ="$(mktemp -d)/baselens-$VERSION-linux-$ARCH"
-mkdir -p "$TGZ"
-install -m755 "$BIN" "$TGZ/baselens"
-cp -r assets LICENSE README.md "$TGZ/"
-tar -C "$(dirname "$TGZ")" -czf "$DIST/baselens-$VERSION-linux-$ARCH.tar.gz" "$(basename "$TGZ")"
 
 ls -la "$DIST"

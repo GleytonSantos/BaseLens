@@ -11,6 +11,15 @@ mkdir -p dist "$HOME/.cargo/registry"
 
 docker build -t "$IMAGE" packaging/docker
 
+# the AppImage runtime, downloaded here (the container's network may be
+# unavailable) and handed to package-linux.sh through target/appimage/
+mkdir -p target/appimage
+if [ ! -s target/appimage/runtime-x86_64 ]; then
+    curl -fsSL --retry 5 -o target/appimage/runtime-x86_64 \
+        https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64 \
+        || echo "(couldn't download the AppImage runtime; appimagetool will try)"
+fi
+
 run() {
     docker run --rm --user "$(id -u):$(id -g)" \
         -e HOME=/tmp -e CARGO_HOME=/tmp/cargo -e CARGO_TARGET_DIR=/src/target/docker \
