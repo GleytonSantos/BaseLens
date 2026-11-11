@@ -221,6 +221,13 @@ struct TableTab {
     view: View,
     chart: ChartCfg,
     notice: Option<String>,
+    /// Properties panel: shown instead of the data, its answer, the open
+    /// sub-tab and the request it waits for
+    props_open: bool,
+    props: Option<crate::props::TableProps>,
+    props_tab: usize,
+    props_tag: u64,
+    props_grid: GridState,
 }
 
 #[derive(Default)]
@@ -535,6 +542,8 @@ enum Action {
     SetManualCommit(bool),
     /// end the open transaction: true = COMMIT, false = ROLLBACK
     EndTx(bool),
+    /// load (or reload) the Properties panel of this table tab
+    LoadProps,
     /// open the Argon2 tool: check this hash, or fill this cell (row, column)
     Argon2 { check: Option<String>, cell: Option<(usize, usize)> },
 }
@@ -1067,6 +1076,16 @@ impl App {
                 }
                 for id in reload {
                     self.load_table(id);
+                }
+            }
+            Response::Properties { tag, props } => {
+                for t in &mut self.tabs {
+                    if let TabKind::Table(tt) = &mut t.kind {
+                        if tt.props_tag == tag {
+                            tt.props = Some(props.clone());
+                            tt.props_tag = 0;
+                        }
+                    }
                 }
             }
             Response::TxState { manual, open, error } => {

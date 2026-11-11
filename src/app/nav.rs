@@ -20,6 +20,7 @@ enum NavAct {
     Activate(u64),
     Er(u64),
     Ask(u64, TableInfo),
+    Props(u64, TableInfo),
 }
 
 enum AskAct {
@@ -300,6 +301,10 @@ impl App {
                                     acts.push(NavAct::Open(sid, t.clone()));
                                     ui.close_menu();
                                 }
+                                if ui.button("ⓘ Properties").clicked() {
+                                    acts.push(NavAct::Props(sid, t.clone()));
+                                    ui.close_menu();
+                                }
                                 if ui.button("◎ Ask Lens about this table").clicked() {
                                     acts.push(NavAct::Ask(sid, t.clone()));
                                     ui.close_menu();
@@ -372,6 +377,22 @@ impl App {
                     }
                 }
                 NavAct::Er(sid) => self.new_er_tab(sid),
+                NavAct::Props(sid, t) => {
+                    self.active_conn = Some(sid);
+                    self.open_table(sid, &t);
+                    let tid = self.active_tab;
+                    let mut load = false;
+                    if let Some(tt) = tid.and_then(|id| self.tabs.iter_mut().find(|x| x.id == id)).and_then(|x| match &mut x.kind {
+                        TabKind::Table(tt) => Some(tt),
+                        _ => None,
+                    }) {
+                        tt.props_open = true;
+                        load = tt.props.is_none() && tt.props_tag == 0;
+                    }
+                    if let (true, Some(tid)) = (load, tid) {
+                        self.do_action(tid, sid, Action::LoadProps);
+                    }
+                }
                 NavAct::Ask(sid, t) => {
                     self.active_conn = Some(sid);
                     self.open_table(sid, &t);

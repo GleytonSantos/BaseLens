@@ -519,6 +519,40 @@ impl App {
                     }
                 }
             }
+            // 22: the Properties panel of a table loads its catalog tabs
+            22 => {
+                let tab = self.tabs.iter().find(|t| matches!(&t.kind, TabKind::Table(tt) if tt.table == "products")).map(|t| (t.id, t.conn));
+                if r.waited == 1 {
+                    match tab {
+                        Some((tid, sid)) => {
+                            self.active_tab = Some(tid);
+                            if let Some(TabKind::Table(tt)) = self.tabs.iter_mut().find(|t| t.id == tid).map(|t| &mut t.kind) {
+                                tt.props_open = true;
+                            }
+                            self.do_action(tid, sid, Action::LoadProps);
+                        }
+                        None => {
+                            r.check(false, "the products table tab is open for the Properties check");
+                            next(r);
+                        }
+                    }
+                } else if r.waited > 2 {
+                    let got = tab.and_then(|(tid, _)| self.tabs.iter().find(|t| t.id == tid)).and_then(|t| match &t.kind {
+                        TabKind::Table(tt) => tt.props.as_ref().map(|p| (p.sections.len(), p.sections.first().and_then(|s| s.count()).unwrap_or(0), matches!(p.sections.last().map(|s| &s.body), Some(crate::props::Body::Text(_))))),
+                        _ => None,
+                    });
+                    if let Some((n, cols, ddl)) = got {
+                        r.check(n >= 6 && cols >= 5 && ddl, &format!("the Properties panel shows {n} tabs, {cols} columns and the DDL"));
+                        if let Some(TabKind::Table(tt)) = tab.and_then(|(tid, _)| self.tabs.iter_mut().find(|t| t.id == tid)).map(|t| &mut t.kind) {
+                            tt.props_open = false;
+                        }
+                        next(r);
+                    } else if r.waited > 200 {
+                        r.check(false, "the Properties panel loads");
+                        next(r);
+                    }
+                }
+            }
             _ => r.done = true,
         }
     }

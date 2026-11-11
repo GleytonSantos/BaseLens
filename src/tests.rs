@@ -269,6 +269,25 @@ fn live_pg() {
     assert!(n.actual_ms.is_some(), "{n:?}");
     // manual transactions: rollback undoes, commit keeps
     tx_roundtrip(&h);
+    // Properties panel on PostgreSQL (orders/items from the test setup)
+    let (r, _) = run("create index if not exists items_sku on items(sku); comment on column orders.customer is 'who bought'", 10);
+    r.unwrap();
+    let p = props_of(&h, DbKind::Postgres, Some("public"), "orders", false);
+    let cols = rows_of(&p, "Columns");
+    assert_eq!(cols.iter().map(|r| r[1].clone()).collect::<Vec<_>>(), ["id", "customer", "total"]);
+    assert!(rows_of(&p, "Constraints").iter().any(|r| r[1] == "primary key"));
+    assert_eq!(rows_of(&p, "References")[0][0], "items");
+    assert!(!rows_of(&p, "Info").is_empty());
+    let ddl = ddl_of(&p);
+    assert!(ddl.starts_with("CREATE TABLE \"public\".\"orders\" (") && ddl.contains("PRIMARY KEY (id)") && ddl.contains("COMMENT ON COLUMN \"public\".\"orders\".\"customer\" IS 'who bought';"), "{ddl}");
+    let pi = props_of(&h, DbKind::Postgres, Some("public"), "items", false);
+    assert!(rows_of(&pi, "Foreign keys")[0][1].contains("orders"));
+    assert!(ddl_of(&pi).contains("CREATE INDEX items_sku"), "{}", ddl_of(&pi));
+    // the generated DDL really creates the table again
+    let (r, _) = run(&format!("BEGIN; CREATE SCHEMA ddl_check; {}; ROLLBACK", ddl.replace("\"public\"", "ddl_check").replace("ON public.", "ON ddl_check.")), 10);
+    r.unwrap();
+    let pv = props_of(&h, DbKind::Postgres, Some("public"), "big", true);
+    assert!(ddl_of(&pv).starts_with("CREATE OR REPLACE VIEW \"public\".\"big\" AS"), "{}", ddl_of(&pv));
 }
 
 /// SQLite's default busy handler, as read in the original (0x685df20):
@@ -571,4 +590,71 @@ fn sqlite_manual_transactions() {
     assert!(matches!(h.rx.recv().unwrap(), Response::Connected { .. }));
     let _ = h.rx.recv().unwrap();
     tx_roundtrip(&h);
+}
+
+fn props_of(h: &Handle, kind: DbKind, schema: Option<&str>, table: &str, is_view: bool) -> crate::props::TableProps {
+    assert!(h.send(Request::Properties { tag: 77, kind, schema: schema.map(str::to_string), table: table.into(), is_view }));
+    loop {
+        if let Response::Properties { tag: 77, props } = h.rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap() {
+            return props;
+        }
+    }
+}
+
+fn rows_of(p: &crate::props::TableProps, name: &str) -> Vec<Vec<String>> {
+    match &p.sections.iter().find(|s| s.name == name).unwrap_or_else(|| panic!("no section {name}")).body {
+        crate::props::Body::Table(r) => r.rows.iter().map(|row| row.iter().map(|c| c.display()).collect()).collect(),
+        other => panic!("{name}: {other:?}"),
+    }
+}
+
+fn ddl_of(p: &crate::props::TableProps) -> String {
+    match &p.sections.last().unwrap().body {
+        crate::props::Body::Text(s) => s.clone(),
+        other => panic!("DDL: {other:?}"),
+    }
+}
+
+#[test]
+fn sqlite_properties_from_a_real_database() {
+    use std::time::Instant;
+    let cfg = ConnConfig { kind: DbKind::Sqlite, path: ":memory:".into(), ..Default::default() };
+    let h = spawn(cfg, String::new());
+    assert!(matches!(h.rx.recv().unwrap(), Response::Connected { .. }));
+    let _ = h.rx.recv().unwrap();
+    let setup = "CREATE TABLE c(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE); \
+                 CREATE TABLE o(id INTEGER PRIMARY KEY, c_id INT REFERENCES c(id) ON DELETE CASCADE, total REAL DEFAULT 0); \
+                 CREATE INDEX o_total ON o(total); \
+                 CREATE TRIGGER o_check BEFORE INSERT ON o BEGIN SELECT 1; END; \
+                 CREATE VIEW big_orders AS SELECT * FROM o WHERE total > 100; \
+                 INSERT INTO c(name) VALUES ('a'), ('b')";
+    assert!(h.send(Request::Query { tag: 1, sql: setup.into(), max_rows: 10, sent: Instant::now() }));
+    let _ = h.rx.recv().unwrap();
+    let p = props_of(&h, DbKind::Sqlite, None, "o", false);
+    let cols = rows_of(&p, "Columns");
+    assert_eq!(cols.iter().map(|r| r[1].clone()).collect::<Vec<_>>(), ["id", "c_id", "total"]);
+    assert_eq!(cols[2][4], "0", "default value");
+    assert!(rows_of(&p, "Indexes").iter().any(|r| r[0] == "o_total"));
+    let fk = rows_of(&p, "Foreign keys");
+    assert_eq!((fk[0][2].as_str(), fk[0][3].as_str(), fk[0][6].as_str()), ("c", "c_id", "CASCADE"));
+    assert_eq!(rows_of(&p, "Triggers")[0][0], "o_check");
+    assert_eq!(rows_of(&p, "Dependencies")[0][0], "big_orders");
+    let ddl = ddl_of(&p);
+    assert!(ddl.starts_with("CREATE TABLE o(") && ddl.contains("CREATE INDEX o_total") && ddl.contains("CREATE TRIGGER o_check"), "{ddl}");
+    // the other side of the key
+    let pc = props_of(&h, DbKind::Sqlite, None, "c", false);
+    assert_eq!(rows_of(&pc, "References")[0][0], "o");
+    assert_eq!(rows_of(&pc, "Info")[0][0], "2");
+    assert!(rows_of(&pc, "Indexes").iter().any(|r| r[2] == "unique constraint"));
+}
+
+#[test]
+fn trigger_bodies_stay_whole() {
+    let s = split_statements("CREATE TRIGGER t1 AFTER INSERT ON o BEGIN UPDATE c SET n = n + 1; SELECT CASE WHEN 1 THEN 2 END; END; SELECT 1; create temp trigger t2 before delete on o begin select 'end;'; end");
+    assert_eq!(s.len(), 3, "{s:?}");
+    assert!(s[0].ends_with("END") && s[0].contains("SELECT CASE WHEN 1 THEN 2 END;"));
+    assert_eq!(s[1], "SELECT 1");
+    assert!(s[2].ends_with("end"));
+    // BEGIN as a statement is not a trigger body
+    assert_eq!(split_statements("BEGIN; INSERT INTO t VALUES (1); COMMIT").len(), 3);
 }

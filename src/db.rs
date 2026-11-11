@@ -22,6 +22,8 @@ pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5000;
 /// SSL_CTX_set_min_proto_version (0x303 = TLS 1.2; max 0x304 = TLS 1.3;
 /// SSLv2/SSLv3 methods are refused outright).
 pub const TLS_MIN_VERSION: &str = "TLSv1.2";
+/// Most rows read for one Properties tab.
+pub const PROPS_MAX_ROWS: usize = 5000;
 
 /// Picking between IPv6 and IPv4 addresses, as the original does (Node's
 /// "network family autoselection", on by default): `EnvironmentOptions`
@@ -384,13 +386,15 @@ pub enum Request {
     /// manual transactions on/off (auto-commit off = every change waits for
     /// Commit or Rollback)
     SetManualCommit(bool),
+    /// the Properties panel of one table (catalog queries, read-only)
+    Properties { tag: u64, kind: DbKind, schema: Option<String>, table: String, is_view: bool },
 }
 
 impl Request {
     /// Schema questions go to the second connection so they never make a
     /// query wait.
     fn is_meta(&self) -> bool {
-        matches!(self, Request::Columns { .. } | Request::AllColumns | Request::Graph { .. })
+        matches!(self, Request::Columns { .. } | Request::AllColumns | Request::Graph { .. } | Request::Properties { .. })
     }
 }
 
@@ -404,6 +408,7 @@ pub enum Response {
     Graph { tag: u64, tables: Vec<(String, Vec<ColumnInfo>)>, fks: Vec<ForeignKey> },
     /// manual-commit mode and whether a transaction is open now
     TxState { manual: bool, open: bool, error: Option<String> },
+    Properties { tag: u64, props: crate::props::TableProps },
 }
 
 trait Backend {
@@ -563,6 +568,18 @@ fn answer_meta(b: &mut Box<dyn Backend>, req: Request, tx: &Sender<Response>) {
             let (tables, fks) = graph_of(b);
             let _ = tx.send(Response::Graph { tag, tables, fks });
         }
+        Request::Properties { tag, kind, schema, table, is_view } => {
+            // one query per tab; a failing one only fills its own tab
+            let answers = crate::props::queries(kind, schema.as_deref(), &table, is_view)
+                .into_iter()
+                .map(|(name, sql)| {
+                    let r = b.run(&sql, PROPS_MAX_ROWS).and_then(|v| v.into_iter().rev().find(|x| !x.columns.is_empty()).ok_or_else(|| "no answer".to_string()));
+                    (name, r)
+                })
+                .collect();
+            let props = crate::props::assemble(kind, schema.as_deref(), &table, is_view, answers);
+            let _ = tx.send(Response::Properties { tag, props });
+        }
         _ => {}
     }
 }
@@ -595,6 +612,10 @@ pub fn spawn(cfg: ConnConfig, password: String) -> Handle {
                                 Request::Columns { table, .. } => tx2.send(Response::Columns { table, cols: Err(e) }),
                                 Request::AllColumns => tx2.send(Response::AllColumns(Err(e))),
                                 Request::Graph { tag } => tx2.send(Response::Graph { tag, tables: vec![], fks: vec![] }),
+                                Request::Properties { tag, .. } => tx2.send(Response::Properties {
+                                    tag,
+                                    props: crate::props::TableProps { sections: vec![crate::props::Section { name: "Error", body: crate::props::Body::Note(e.clone()) }] },
+                                }),
                                 _ => Ok(()),
                             };
                             continue;
@@ -721,6 +742,51 @@ fn dollar_tag(chars: &[char], i: usize) -> Option<usize> {
     (chars.get(j) == Some(&'$')).then_some(j + 1 - i)
 }
 
+/// True while a `CREATE [TEMP] TRIGGER … BEGIN` body hasn't reached its END
+/// yet (`bare` = the statement so far, strings kept whole, comments out):
+/// BEGIN and CASE open a block, END closes one, counted from the first BEGIN.
+fn trigger_body_open(bare: &str) -> bool {
+    let up = bare.to_ascii_uppercase();
+    // words only, ignoring the inside of strings and quoted names
+    let mut words: Vec<String> = Vec::new();
+    let mut w = String::new();
+    let mut quote: Option<char> = None;
+    for ch in up.chars() {
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => {}
+            None if ch == '\'' || ch == '"' || ch == '`' || ch == '[' => {
+                quote = Some(if ch == '[' { ']' } else { ch });
+                if !w.is_empty() {
+                    words.push(std::mem::take(&mut w));
+                }
+            }
+            None if ch.is_ascii_alphanumeric() || ch == '_' => w.push(ch),
+            None => {
+                if !w.is_empty() {
+                    words.push(std::mem::take(&mut w));
+                }
+            }
+        }
+    }
+    if !w.is_empty() {
+        words.push(w);
+    }
+    if words.first().map(String::as_str) != Some("CREATE") || !words.iter().take(4).any(|x| x == "TRIGGER") {
+        return false;
+    }
+    let Some(b) = words.iter().position(|x| x == "BEGIN") else { return false };
+    let mut depth = 0i32;
+    for x in &words[b..] {
+        match x.as_str() {
+            "BEGIN" | "CASE" => depth += 1,
+            "END" => depth -= 1,
+            _ => {}
+        }
+    }
+    depth > 0
+}
+
 /// One pass over SQL that knows about '…' "…" `…` strings (a doubled quote
 /// stays inside), PostgreSQL $tag$…$tag$ bodies, -- line comments and
 /// /* */ comments. Returns the statements split on `;` outside all of
@@ -784,6 +850,11 @@ fn scan_sql(sql: &str) -> Vec<(String, String)> {
             i = (i + 2).min(n);
             cur.extend(chars[start..i].iter());
             bare.push(' ');
+        } else if c == ';' && trigger_body_open(&bare) {
+            // inside CREATE TRIGGER … BEGIN … END the `;` ends a step, not the statement
+            cur.push(';');
+            bare.push(';');
+            i += 1;
         } else if c == ';' {
             flush(&mut cur, &mut bare, &mut out);
             i += 1;

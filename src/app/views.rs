@@ -167,6 +167,73 @@ fn lint_panel(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palette, kind: c
     }
 }
 
+/// The Properties panel: one sub-tab per catalog section.
+fn props_panel(ui: &mut egui::Ui, tt: &mut TableTab, id: u64, p: &Palette, actions: &mut Vec<Action>) {
+    let Some(props) = &tt.props else {
+        ui.add_space(30.0);
+        ui.vertical_centered(|ui| {
+            ui.spinner();
+            ui.label(RichText::new("Reading the catalog…").color(p.text_light));
+        });
+        return;
+    };
+    if props.sections.is_empty() {
+        return;
+    }
+    tt.props_tab = tt.props_tab.min(props.sections.len() - 1);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (i, s) in props.sections.iter().enumerate() {
+            let sel = i == tt.props_tab;
+            let empty = s.count() == Some(0);
+            let label = match s.count() {
+                Some(n) if n > 0 => format!("{} {n}", s.name),
+                _ => s.name.to_string(),
+            };
+            let color = if sel { p.on_primary } else if empty { p.text_lighter } else { p.text_light };
+            let b = egui::Button::new(RichText::new(label).color(color)).fill(if sel { p.primary } else { Color32::TRANSPARENT }).corner_radius(7);
+            if ui.add(b).clicked() && !sel {
+                tt.props_tab = i;
+                tt.props_grid = GridState::default();
+            }
+        }
+    });
+    ui.add_space(6.0);
+    let section = props.sections[tt.props_tab].clone();
+    match &section.body {
+        crate::props::Body::Table(r) if r.rows.is_empty() => {
+            ui.add_space(20.0);
+            ui.vertical_centered(|ui| ui.label(RichText::new(format!("No {} for this table.", section.name.to_lowercase())).color(p.text_light)));
+        }
+        crate::props::Body::Table(r) => {
+            let h = ui.available_height();
+            ui.allocate_ui(Vec2::new(ui.available_width(), h.max(60.0)), |ui| {
+                widgets::grid(ui, ("props", id, tt.props_tab), r, &mut tt.props_grid, None, p, 0, None, &[]);
+            });
+        }
+        crate::props::Body::Text(ddl) => {
+            ui.horizontal(|ui| {
+                if ui.add(ghost_button(p, "Copy")).clicked() {
+                    ui.ctx().copy_text(ddl.clone());
+                }
+                if ui.add(ghost_button(p, "Open in a query tab")).clicked() {
+                    actions.push(Action::OpenInEditor(ddl.clone()));
+                }
+            });
+            ui.add_space(4.0);
+            egui::Frame::new().fill(p.editor_bg).corner_radius(8).inner_margin(10).show(ui, |ui| {
+                egui::ScrollArea::both().id_salt(("ddl", id)).auto_shrink([false, false]).show(ui, |ui| {
+                    let job = widgets::sql_job(ddl, p, egui::TextStyle::Monospace.resolve(ui.style()), f32::INFINITY);
+                    ui.add(egui::Label::new(job).selectable(true));
+                });
+            });
+        }
+        crate::props::Body::Note(n) => {
+            ui.label(RichText::new(n).color(p.warning));
+        }
+    }
+}
+
 /// Every export format, with its shortcut where it has one.
 fn export_menu(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     for f in crate::export::Format::ALL {
@@ -785,13 +852,32 @@ pub(super) fn table_view(ui: &mut egui::Ui, tt: &mut TableTab, id: u64, p: &Pale
             ui.spinner();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(ghost_button(p, "⟳")).on_hover_text("Refresh  (F5)").clicked() {
-                actions.push(Action::Reload);
+            if tt.props_open {
+                if ui.add(ghost_button(p, "⟳")).on_hover_text("Read the properties again").clicked() {
+                    actions.push(Action::LoadProps);
+                }
+                if ui.add(primary_button(p, "ⓘ Properties")).on_hover_text("Back to the data").clicked() {
+                    tt.props_open = false;
+                }
+            } else {
+                if ui.add(ghost_button(p, "⟳")).on_hover_text("Refresh  (F5)").clicked() {
+                    actions.push(Action::Reload);
+                }
+                if ui.add(ghost_button(p, "ⓘ Properties")).on_hover_text("Columns, indexes, keys, triggers, permissions, DDL…").clicked() {
+                    tt.props_open = true;
+                    if tt.props.is_none() && tt.props_tag == 0 {
+                        actions.push(Action::LoadProps);
+                    }
+                }
+                view_switch(ui, &mut tt.view, p);
             }
-            view_switch(ui, &mut tt.view, p);
         });
     });
     ui.add_space(6.0);
+    if tt.props_open {
+        props_panel(ui, tt, id, p, actions);
+        return;
+    }
     if filter_bar(ui, tt, p, id, vals, actions) {
         tt.page = 0;
         actions.push(Action::Reload);

@@ -810,6 +810,21 @@ impl App {
             }
             Action::ShowJson => self.settings.show_json = true,
             Action::StopQuery => self.stop_query(tid, StopReason::Person),
+            Action::LoadProps => {
+                let tag = self.id();
+                let kind = self.conn(sid).map(|o| o.cfg.kind).unwrap_or(crate::db::DbKind::Sqlite);
+                let req = self.tabs.iter_mut().find(|t| t.id == tid).and_then(|t| match &mut t.kind {
+                    TabKind::Table(tt) => {
+                        tt.props = None;
+                        tt.props_tag = tag;
+                        Some(Request::Properties { tag, kind, schema: tt.schema.clone(), table: tt.table.clone(), is_view: tt.is_view })
+                    }
+                    _ => None,
+                });
+                if let (Some(req), Some(o)) = (req, self.conn(sid)) {
+                    let _ = o.handle.send(req);
+                }
+            }
             Action::Explain(analyze) => self.explain_query_tab(tid, analyze),
             Action::SetManualCommit(on) => {
                 if let Some(o) = self.conn(sid) {
