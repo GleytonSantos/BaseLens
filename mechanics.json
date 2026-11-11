@@ -1020,24 +1020,6 @@
       "source": "BaseLens design (props.rs ERD_MAX_NEIGHBOURS)"
     },
     {
-      "name": "ER diagram smallest zoom",
-      "group": "er",
-      "value": 0.25,
-      "source": "BaseLens design (widgets.rs ER_ZOOM_MIN)"
-    },
-    {
-      "name": "ER diagram largest zoom",
-      "group": "er",
-      "value": 2.5,
-      "source": "BaseLens design (widgets.rs ER_ZOOM_MAX)"
-    },
-    {
-      "name": "ER diagram zoom step of + / -",
-      "group": "er",
-      "value": 1.2,
-      "source": "BaseLens design (widgets.rs ER_ZOOM_STEP)"
-    },
-    {
       "name": "ER table width",
       "group": "er",
       "value": 210,
@@ -1054,6 +1036,72 @@
       "group": "er",
       "value": 19,
       "source": "BaseLens design (widgets.rs ER_ROW)"
+    },
+    {
+      "name": "ER diagram smallest zoom",
+      "group": "er",
+      "value": 0.25,
+      "source": "double at 0x1e33df8 (Chromium kMinimumZoomFactor), read at 0x5b3e048 / 0xa262ebf"
+    },
+    {
+      "name": "ER diagram largest zoom",
+      "group": "er",
+      "value": 5.0,
+      "source": "double at 0x1e33e00 (Chromium kMaximumZoomFactor), read at 0x5b3e05f / 0xa262ed7"
+    },
+    {
+      "name": "ER zoom preset factors",
+      "group": "er",
+      "value": [
+        0.25,
+        0.3333333333333333,
+        0.5,
+        0.6666666666666666,
+        0.75,
+        0.8,
+        0.9,
+        1.0,
+        1.1,
+        1.25,
+        1.5,
+        1.75,
+        2.0,
+        2.5,
+        3.0,
+        4.0,
+        5.0
+      ],
+      "source": "17 doubles at 0x1e33d70, ends checked against min/max at 0xa9f6e20"
+    },
+    {
+      "name": "ER zoom level ratio",
+      "group": "er",
+      "value": 1.2,
+      "source": "function 0x3f4dae0: pow(1.2 @0xe5e828, level)"
+    },
+    {
+      "name": "ER zoom ln(ratio)",
+      "group": "er",
+      "value": 0.1823215567939546,
+      "source": "function 0x3f4db00: log(factor) / 0.1823215567939546 @0xe5f6d8"
+    },
+    {
+      "name": "ER zoom equality epsilon",
+      "group": "er",
+      "value": 0.001,
+      "source": "function 0x3f4db20: fabs(a-b) <= 0.001 @0xe60e38"
+    },
+    {
+      "name": "ER zoom percent multiplier",
+      "group": "er",
+      "value": 100,
+      "source": "0x5b3e04f: min/max * 100.0 @0xe5eec8, truncated (cvttsd2si) to 25 / 500"
+    },
+    {
+      "name": "ER Ctrl+wheel zoom levels per point",
+      "group": "er",
+      "value": 0.01,
+      "source": "BaseLens design (widgets.rs ER_WHEEL_LEVELS_PER_POINT)"
     }
   ]
 }
