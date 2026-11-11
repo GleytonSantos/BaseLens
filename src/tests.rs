@@ -658,3 +658,22 @@ fn trigger_bodies_stay_whole() {
     // BEGIN as a statement is not a trigger body
     assert_eq!(split_statements("BEGIN; INSERT INTO t VALUES (1); COMMIT").len(), 3);
 }
+
+#[test]
+fn sqlite_complete_matches_sqlite() {
+    // compare our port with the bundled SQLite's own sqlite3_complete
+    let cases = [
+        "select 1", "select 1;", "select 1; -- note", "select 'a;b';", "select 'unterminated;",
+        "/* c */ select 1;", "/* open", "create trigger t after insert on o begin select 1; end;",
+        "create trigger t after insert on o begin select 1;", "create temp trigger t before delete on o begin select case when 1 then 2 end; end;",
+        "explain select 1;", "select [a;b] from t;", "create table t(a);", "create trigger t after insert on o begin select 1; end",
+        "CREATE TRIGGER x AFTER UPDATE ON o BEGIN UPDATE c SET n = 1; SELECT \"end\"; END;",
+    ];
+    for s in cases {
+        let c = std::ffi::CString::new(s).unwrap();
+        let theirs = unsafe { rusqlite::ffi::sqlite3_complete(c.as_ptr()) } != 0;
+        assert_eq!(sqlite_complete(s), theirs, "{s}");
+    }
+    // PostgreSQL triggers (no BEGIN body) still end at their semicolon
+    assert_eq!(split_statements("CREATE TRIGGER t BEFORE INSERT ON o FOR EACH ROW EXECUTE FUNCTION f(); SELECT 1").len(), 2);
+}

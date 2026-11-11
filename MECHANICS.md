@@ -468,3 +468,16 @@ Used in the build (`sql.rs::validate_sqlite`): for SQLite connections the editor
 PostgreSQL has no single "CREATE TABLE source", so the DDL is assembled: columns with type, DEFAULT and NOT NULL; every constraint as `CONSTRAINT name <pg_get_constraintdef>` (PostgreSQL 18's NOT NULL constraints skipped, they're on the columns); indexes that don't come from a constraint (`pg_get_indexdef`); triggers; `COMMENT ON TABLE/COLUMN`. Views: `CREATE OR REPLACE VIEW … AS pg_get_viewdef(…, true)`. Checked live: the generated DDL of `orders` re-creates the table in a scratch schema (inside a rolled-back transaction).
 
 Found and fixed on the way: the statement splitter cut `CREATE TRIGGER … BEGIN …; …; END` at the first `;` (so creating a trigger from the editor failed). Inside a CREATE [TEMP] TRIGGER, after its BEGIN, `;` no longer ends the statement until BEGIN/CASE … END blocks are closed (`trigger_body_open`). Tests `sqlite_properties_from_a_real_database`, `trigger_bodies_stay_whole`, props unit tests, live PostgreSQL in `live_pg`; robot step 22 opens the panel on the demo table.
+
+
+## Round 36 — decompiled: where SQLite decides a statement is complete
+
+Found by searching the original for SQLite's `sqlite3_complete` transition table (64 bytes at **0x20fd790**), used only by the code at **0x685c030** (`sqlite3_complete`; the built-in analysis hadn't discovered it, read with objdump):
+
+- state starts at 0; for each token `state = trans[state][token]` with `lea (%rcx,%rax,8)` → rows of 8;
+- token classes: `;` → SEMI (0); space, `\t \n \f \r` (9–13, 32) → WS (1); `-- …` to the newline and `/* … */` → WS (an unterminated block comment or quote returns "incomplete"); `'…'`, `"…"`, `` `…` ``, `[…]` → OTHER (2); words compared without case through the table at 0x20fd090: EXPLAIN (3), CREATE (4), TEMP/TEMPORARY (5), TRIGGER (6), END (7), anything else OTHER;
+- the text is complete when the final state is 1 (START) — `cmp $0x1,%al; sete %al`.
+
+The table (states INVALID, START, NORMAL, EXPLAIN, CREATE, TRIGGER, SEMI, END × the 8 classes) means that once `CREATE [TEMP] TRIGGER` is seen, only the sequence **`; END ;`** ends the statement — an END that doesn't follow a `;` (e.g. `CASE … END`) doesn't.
+
+Used in the build (`db.rs::sqlite_complete`, `SQLITE_COMPLETE_TRANS`): the statement splitter's trigger rule (Round 35 counted BEGIN/CASE vs END) now asks this exact state machine whether `CREATE TRIGGER … BEGIN … ;` is complete. It applies only to triggers with a BEGIN body (SQLite, MySQL); PostgreSQL triggers (`EXECUTE FUNCTION f()`) still end at their first `;`. Test `sqlite_complete_matches_sqlite` compares the port with the bundled SQLite's own `sqlite3_complete` on 15 inputs (comments, quotes, brackets, EXPLAIN, triggers with CASE … END, unterminated text).

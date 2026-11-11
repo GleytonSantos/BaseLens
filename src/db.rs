@@ -742,9 +742,98 @@ fn dollar_tag(chars: &[char], i: usize) -> Option<usize> {
     (chars.get(j) == Some(&'$')).then_some(j + 1 - i)
 }
 
+/// `sqlite3_complete`'s transition table, read from the original at
+/// 0x20fd790 (used by the function at 0x685c030). Rows are states
+/// 0 INVALID, 1 START, 2 NORMAL, 3 EXPLAIN, 4 CREATE, 5 TRIGGER, 6 SEMI,
+/// 7 END; columns are token classes SEMI, WS, OTHER, EXPLAIN, CREATE, TEMP,
+/// TRIGGER, END.
+pub const SQLITE_COMPLETE_TRANS: [[u8; 8]; 8] = [
+    [1, 0, 2, 3, 4, 2, 2, 2],
+    [1, 1, 2, 3, 4, 2, 2, 2],
+    [1, 2, 2, 2, 2, 2, 2, 2],
+    [1, 3, 3, 2, 4, 2, 2, 2],
+    [1, 4, 2, 2, 2, 4, 5, 2],
+    [6, 5, 5, 5, 5, 5, 5, 5],
+    [6, 6, 5, 5, 5, 5, 5, 7],
+    [1, 7, 5, 5, 5, 5, 5, 5],
+];
+
+/// `sqlite3_complete` (0x685c030 in the original): true when the text ends
+/// with a complete statement. Whitespace and comments are class WS; '…', "…",
+/// `…` and […] are OTHER (unterminated → incomplete); `;` is SEMI; the words
+/// EXPLAIN, CREATE, TEMP/TEMPORARY, TRIGGER and END have their own classes
+/// (compared without case, through the upper/lower table at 0x20fd090).
+/// Inside CREATE … TRIGGER only "; END ;" ends the statement, so a CASE … END
+/// in the body doesn't.
+pub fn sqlite_complete(sql: &str) -> bool {
+    const SEMI: usize = 0;
+    const WS: usize = 1;
+    const OTHER: usize = 2;
+    let z = sql.as_bytes();
+    let mut state = 0usize;
+    let mut i = 0;
+    while i < z.len() {
+        let c = z[i];
+        let token = match c {
+            b';' => SEMI,
+            b' ' | b'\r' | b'\t' | b'\n' | 0x0c => WS,
+            b'/' if z.get(i + 1) == Some(&b'*') => {
+                match sql[i + 2..].find("*/") {
+                    Some(e) => i += 2 + e + 1,
+                    None => return false,
+                }
+                WS
+            }
+            b'-' if z.get(i + 1) == Some(&b'-') => {
+                while i < z.len() && z[i] != b'\n' {
+                    i += 1;
+                }
+                if i >= z.len() {
+                    return state == 1;
+                }
+                WS
+            }
+            b'[' => {
+                match sql[i + 1..].find(']') {
+                    Some(e) => i += 1 + e,
+                    None => return false,
+                }
+                OTHER
+            }
+            b'`' | b'"' | b'\'' => {
+                match sql[i + 1..].find(c as char) {
+                    Some(e) => i += 1 + e,
+                    None => return false,
+                }
+                OTHER
+            }
+            _ if c.is_ascii_alphabetic() || c == b'_' || c >= 0x80 => {
+                let start = i;
+                while i + 1 < z.len() && (z[i + 1].is_ascii_alphanumeric() || z[i + 1] == b'_' || z[i + 1] == b'$' || z[i + 1] >= 0x80) {
+                    i += 1;
+                }
+                match sql[start..=i].to_ascii_uppercase().as_str() {
+                    "EXPLAIN" => 3,
+                    "CREATE" => 4,
+                    "TEMP" | "TEMPORARY" => 5,
+                    "TRIGGER" => 6,
+                    "END" => 7,
+                    _ => OTHER,
+                }
+            }
+            _ => OTHER,
+        };
+        state = SQLITE_COMPLETE_TRANS[state][token] as usize;
+        i += 1;
+    }
+    state == 1
+}
+
 /// True while a `CREATE [TEMP] TRIGGER … BEGIN` body hasn't reached its END
-/// yet (`bare` = the statement so far, strings kept whole, comments out):
-/// BEGIN and CASE open a block, END closes one, counted from the first BEGIN.
+/// yet (`bare` = the statement so far, strings kept whole, comments out). The
+/// end is decided by SQLite's own rule (`sqlite_complete`): "; END ;". Only
+/// for triggers with a BEGIN body (SQLite, MySQL); PostgreSQL triggers
+/// (EXECUTE FUNCTION …) have no END and end at their first `;`.
 fn trigger_body_open(bare: &str) -> bool {
     let up = bare.to_ascii_uppercase();
     // words only, ignoring the inside of strings and quoted names
@@ -775,16 +864,10 @@ fn trigger_body_open(bare: &str) -> bool {
     if words.first().map(String::as_str) != Some("CREATE") || !words.iter().take(4).any(|x| x == "TRIGGER") {
         return false;
     }
-    let Some(b) = words.iter().position(|x| x == "BEGIN") else { return false };
-    let mut depth = 0i32;
-    for x in &words[b..] {
-        match x.as_str() {
-            "BEGIN" | "CASE" => depth += 1,
-            "END" => depth -= 1,
-            _ => {}
-        }
+    if !words.iter().any(|x| x == "BEGIN") {
+        return false;
     }
-    depth > 0
+    !sqlite_complete(&format!("{bare};"))
 }
 
 /// One pass over SQL that knows about '…' "…" `…` strings (a doubled quote
