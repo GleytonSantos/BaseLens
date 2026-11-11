@@ -228,6 +228,8 @@ struct TableTab {
     props_tab: usize,
     props_tag: u64,
     props_grid: GridState,
+    /// the per-table diagram (Diagram sub-tab)
+    props_er: crate::widgets::ErState,
 }
 
 #[derive(Default)]
@@ -544,6 +546,8 @@ enum Action {
     EndTx(bool),
     /// load (or reload) the Properties panel of this table tab
     LoadProps,
+    /// open a table of this connection by name (double-click in a diagram)
+    OpenTable(String),
     /// open the Argon2 tool: check this hash, or fill this cell (row, column)
     Argon2 { check: Option<String>, cell: Option<(usize, usize)> },
 }
@@ -1082,6 +1086,10 @@ impl App {
                 for t in &mut self.tabs {
                     if let TabKind::Table(tt) = &mut t.kind {
                         if tt.props_tag == tag {
+                            match &props.erd {
+                                Some(e) => tt.props_er.set_focus(&e.center, e.tables.clone(), e.fks.clone()),
+                                None => tt.props_er = crate::widgets::ErState::default(),
+                            }
                             tt.props = Some(props.clone());
                             tt.props_tag = 0;
                         }
@@ -1810,6 +1818,21 @@ impl App {
                 self.ask.scope = AskScope::Database;
                 self.ask.input = "tem 'Honey' em algum lugar?".into();
                 self.ask_send();
+            }
+            if (scene == "props" || scene == "props-erd") && self.demo_setup == 3 {
+                let tab = self.tabs.iter_mut().find_map(|t| match &mut t.kind {
+                    TabKind::Table(tt) => {
+                        tt.props_open = true;
+                        if scene == "props-erd" {
+                            tt.props_tab = usize::MAX; // the Diagram tab, once it exists
+                        }
+                        Some((t.id, t.conn))
+                    }
+                    _ => None,
+                });
+                if let Some((tid, sid)) = tab {
+                    self.do_action(tid, sid, Action::LoadProps);
+                }
             }
             if scene == "nav" && self.demo_setup == 3 {
                 if let Some(o) = self.open.first() {

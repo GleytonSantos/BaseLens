@@ -550,6 +550,31 @@ fn graph_of(b: &mut Box<dyn Backend>) -> (Vec<(String, Vec<ColumnInfo>)>, Vec<Fo
     (out, fks)
 }
 
+/// The table and its direct neighbours by foreign key, for the per-table diagram.
+fn table_erd(b: &mut Box<dyn Backend>, schema: Option<&str>, table: &str) -> Option<crate::props::Erd> {
+    let tables = b.tables().ok()?;
+    let fks: Vec<ForeignKey> = b.foreign_keys(&tables).into_iter().filter(|f| f.from_table == table || f.to_table == table).collect();
+    let mut names: Vec<String> = vec![table.to_string()];
+    for f in &fks {
+        for n in [&f.from_table, &f.to_table] {
+            if !names.contains(n) && names.len() <= crate::props::ERD_MAX_NEIGHBOURS {
+                names.push(n.clone());
+            }
+        }
+    }
+    let cols: Vec<(String, Vec<ColumnInfo>)> = names
+        .iter()
+        .map(|n| {
+            // prefer the same schema when a name exists in several
+            let t = tables.iter().find(|t| &t.name == n && t.schema.as_deref() == schema).or_else(|| tables.iter().find(|t| &t.name == n));
+            let c = t.and_then(|t| b.columns(t.schema.as_deref(), &t.name).ok()).unwrap_or_default();
+            (n.clone(), c)
+        })
+        .collect();
+    let fks = fks.into_iter().filter(|f| names.contains(&f.from_table) && names.contains(&f.to_table)).collect();
+    Some(crate::props::Erd { center: table.to_string(), tables: cols, fks })
+}
+
 /// Answers a schema question (on whichever connection runs it).
 fn answer_meta(b: &mut Box<dyn Backend>, req: Request, tx: &Sender<Response>) {
     match req {
@@ -577,7 +602,8 @@ fn answer_meta(b: &mut Box<dyn Backend>, req: Request, tx: &Sender<Response>) {
                     (name, r)
                 })
                 .collect();
-            let props = crate::props::assemble(kind, schema.as_deref(), &table, is_view, answers);
+            let mut props = crate::props::assemble(kind, schema.as_deref(), &table, is_view, answers);
+            props.erd = table_erd(b, schema.as_deref(), &table);
             let _ = tx.send(Response::Properties { tag, props });
         }
         _ => {}
@@ -614,7 +640,7 @@ pub fn spawn(cfg: ConnConfig, password: String) -> Handle {
                                 Request::Graph { tag } => tx2.send(Response::Graph { tag, tables: vec![], fks: vec![] }),
                                 Request::Properties { tag, .. } => tx2.send(Response::Properties {
                                     tag,
-                                    props: crate::props::TableProps { sections: vec![crate::props::Section { name: "Error", body: crate::props::Body::Note(e.clone()) }] },
+                                    props: crate::props::TableProps { sections: vec![crate::props::Section { name: "Error", body: crate::props::Body::Note(e.clone()) }], erd: None },
                                 }),
                                 _ => Ok(()),
                             };

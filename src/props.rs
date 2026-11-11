@@ -35,6 +35,61 @@ impl Section {
 #[derive(Clone, Debug, Default)]
 pub struct TableProps {
     pub sections: Vec<Section>,
+    /// the table with its direct neighbours, for the Diagram tab
+    pub erd: Option<Erd>,
+}
+
+/// One table and the tables its foreign keys touch, both ways.
+#[derive(Clone, Debug, Default)]
+pub struct Erd {
+    pub center: String,
+    pub tables: Vec<(String, Vec<crate::db::ColumnInfo>)>,
+    pub fks: Vec<crate::db::ForeignKey>,
+}
+
+/// Most neighbour tables drawn around one table.
+pub const ERD_MAX_NEIGHBOURS: usize = 30;
+
+/// Icon of each tab.
+pub fn icon(name: &str) -> &'static str {
+    match name {
+        "Columns" => "☰",
+        "Constraints" => "✔",
+        "Foreign keys" => "🔗",
+        "References" => "↩",
+        "Indexes" => "⚡",
+        "Triggers" => "⚙",
+        "Partitions" => "▤",
+        "Rules" => "📜",
+        "Policies" => "🔒",
+        "Dependencies" => "🔀",
+        "Permissions" => "👤",
+        "Info" => "ℹ",
+        "DDL" => "📝",
+        "Diagram" => "⛓",
+        _ => "•",
+    }
+}
+
+/// One line saying what a tab shows.
+pub fn about(name: &str) -> &'static str {
+    match name {
+        "Columns" => "Every column with its type, whether it may be empty, its default and comment.",
+        "Constraints" => "Rules the database enforces on every row: primary key, unique, check, foreign key.",
+        "Foreign keys" => "Columns of this table that point at rows of another table.",
+        "References" => "Other tables whose foreign keys point at this one.",
+        "Indexes" => "Lookup structures that make searches, joins and sorting on these columns fast.",
+        "Triggers" => "Code the database runs by itself when rows change.",
+        "Partitions" => "Pieces the table is split into, and which rows go where.",
+        "Rules" => "Query rewrite rules (PostgreSQL).",
+        "Policies" => "Row-level security: which rows each user may see or change.",
+        "Dependencies" => "Views built on top of this table.",
+        "Permissions" => "Who may do what with this table.",
+        "Info" => "Size, rows and ownership.",
+        "DDL" => "The SQL that creates this table.",
+        "Diagram" => "This table, the tables it points at (right) and the tables that point at it (left).",
+        _ => "",
+    }
 }
 
 /// Sections that are only used to build others start with '_' and aren't shown.
@@ -289,7 +344,7 @@ pub fn assemble(kind: DbKind, schema: Option<&str>, table: &str, is_view: bool, 
             Err(e) => Body::Note(e),
         },
     });
-    TableProps { sections }
+    TableProps { sections, erd: None }
 }
 
 #[cfg(test)]

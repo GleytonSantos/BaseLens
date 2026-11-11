@@ -538,11 +538,12 @@ impl App {
                     }
                 } else if r.waited > 2 {
                     let got = tab.and_then(|(tid, _)| self.tabs.iter().find(|t| t.id == tid)).and_then(|t| match &t.kind {
-                        TabKind::Table(tt) => tt.props.as_ref().map(|p| (p.sections.len(), p.sections.first().and_then(|s| s.count()).unwrap_or(0), matches!(p.sections.last().map(|s| &s.body), Some(crate::props::Body::Text(_))))),
+                        TabKind::Table(tt) => tt.props.as_ref().map(|p| (p.sections.len(), p.sections.first().and_then(|s| s.count()).unwrap_or(0), matches!(p.sections.last().map(|s| &s.body), Some(crate::props::Body::Text(_))), tt.props_er.tables.len())),
                         _ => None,
                     });
-                    if let Some((n, cols, ddl)) = got {
+                    if let Some((n, cols, ddl, erd)) = got {
                         r.check(n >= 6 && cols >= 5 && ddl, &format!("the Properties panel shows {n} tabs, {cols} columns and the DDL"));
+                        r.check(erd >= 2, &format!("the table's own diagram draws it with {} neighbour table(s)", erd.saturating_sub(1)));
                         if let Some(TabKind::Table(tt)) = tab.and_then(|(tid, _)| self.tabs.iter_mut().find(|t| t.id == tid)).map(|t| &mut t.kind) {
                             tt.props_open = false;
                         }

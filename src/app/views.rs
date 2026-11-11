@@ -167,9 +167,62 @@ fn lint_panel(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palette, kind: c
     }
 }
 
-/// The Properties panel: one sub-tab per catalog section.
+/// Is this cell a yes (true, 1, yes, t)?
+fn truthy(c: &crate::db::Cell) -> bool {
+    matches!(c.display().to_lowercase().as_str(), "true" | "1" | "yes" | "t")
+}
+
+/// Colour of a column type by family: numbers, text, time, yes/no, documents, bytes.
+fn type_color(p: &Palette, ty: &str) -> Color32 {
+    let t = ty.to_lowercase();
+    let has = |w: &[&str]| w.iter().any(|x| t.contains(x));
+    if has(&["bool"]) {
+        p.purple
+    } else if has(&["int", "serial", "num", "dec", "real", "double", "float", "money", "bit"]) {
+        p.pink
+    } else if has(&["date", "time", "interval", "year"]) {
+        p.info
+    } else if has(&["json", "xml", "[]", "array", "hstore"]) {
+        p.warning
+    } else if has(&["blob", "bytea", "binary"]) {
+        p.secondary
+    } else if has(&["char", "text", "string", "clob", "uuid", "enum", "set"]) {
+        p.success
+    } else {
+        p.text_light
+    }
+}
+
+fn chip(ui: &mut egui::Ui, text: impl Into<String>, color: Color32) {
+    egui::Frame::new().fill(color.gamma_multiply(0.16)).corner_radius(6).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
+        ui.label(RichText::new(text.into()).size(11.5).color(color));
+    });
+}
+
+/// A small tile: big value over a caption.
+fn stat_tile(ui: &mut egui::Ui, p: &Palette, icon: &str, value: &str, caption: &str, color: Color32) {
+    egui::Frame::new().fill(p.panel_alt).stroke(Stroke::new(1.0, p.border)).corner_radius(10).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+        ui.set_min_width(92.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(icon).size(14.0).color(color));
+                ui.label(RichText::new(value).strong().size(17.0).color(p.text_dark));
+            });
+            ui.label(RichText::new(caption).size(11.0).color(p.text_light));
+        });
+    });
+}
+
+/// Column index by (lower-case) header name, first that exists.
+fn col_idx(r: &QueryResult, names: &[&str]) -> Option<usize> {
+    names.iter().find_map(|n| r.columns.iter().position(|c| c.eq_ignore_ascii_case(n)))
+}
+
+/// The Properties panel: a summary card, then one sub-tab per catalog section
+/// plus the table's own relationship diagram.
 fn props_panel(ui: &mut egui::Ui, tt: &mut TableTab, id: u64, p: &Palette, actions: &mut Vec<Action>) {
-    let Some(props) = &tt.props else {
+    let Some(props) = tt.props.as_ref() else {
         ui.add_space(30.0);
         ui.vertical_centered(|ui| {
             ui.spinner();
@@ -180,30 +233,222 @@ fn props_panel(ui: &mut egui::Ui, tt: &mut TableTab, id: u64, p: &Palette, actio
     if props.sections.is_empty() {
         return;
     }
-    tt.props_tab = tt.props_tab.min(props.sections.len() - 1);
+    let find = |name: &str| props.sections.iter().find(|s| s.name == name);
+    let count = |name: &str| find(name).and_then(|s| s.count());
+    // Info as (caption, value) pairs from its single row
+    let info: Vec<(String, String)> = match find("Info").map(|s| &s.body) {
+        Some(crate::props::Body::Table(r)) if r.rows.len() == 1 => r.columns.iter().cloned().zip(r.rows[0].iter().map(|c| if c.is_null() { String::new() } else { c.display() })).collect(),
+        _ => Vec::new(),
+    };
+    let info_get = |keys: &[&str]| info.iter().find(|(k, v)| !v.is_empty() && keys.iter().any(|x| k.contains(x))).map(|(_, v)| v.clone());
+    let erd = props.erd.as_ref();
+    let fk_cols: Vec<String> = erd.map(|e| e.fks.iter().filter(|f| f.from_table == e.center).map(|f| f.from_col.clone()).collect()).unwrap_or_default();
+    let pk_cols: Vec<String> = erd.and_then(|e| e.tables.iter().find(|(n, _)| *n == e.center)).map(|(_, c)| c.iter().filter(|c| c.pk).map(|c| c.name.clone()).collect()).unwrap_or_default();
+
+    // ── summary card ──
+    egui::Frame::new().fill(p.panel_alt.gamma_multiply(0.6)).stroke(Stroke::new(1.0, p.border)).corner_radius(12).inner_margin(12).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("ℹ  Overview").strong().size(15.0).color(p.text_dark));
+            chip(ui, if tt.is_view { "view" } else { "table" }, if tt.is_view { p.secondary } else { p.primary });
+            if let Some(s) = &tt.schema {
+                chip(ui, format!("schema {s}"), p.text_light);
+            }
+            if let Some(o) = info_get(&["owner"]) {
+                chip(ui, format!("👤 {o}"), p.info);
+            }
+            if let Some(e) = info_get(&["engine"]) {
+                chip(ui, e, p.warning);
+            }
+        });
+        if let Some(c) = info_get(&["comment"]) {
+            ui.label(RichText::new(format!("“{c}”")).italics().color(p.text_light));
+        }
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+            if let Some(r) = info_get(&["rows"]) {
+                stat_tile(ui, p, "#", &r, "rows", p.primary);
+            }
+            if let Some(sz) = info_get(&["total size", "data MiB"]) {
+                stat_tile(ui, p, "💾", &sz, "size", p.info);
+            }
+            let tiles = [("Columns", "columns", p.secondary), ("Indexes", "indexes", p.warning), ("Foreign keys", "foreign keys", p.pink), ("References", "referenced by", p.purple), ("Triggers", "triggers", p.success)];
+            for (sec, caption, color) in tiles {
+                let n = match sec {
+                    "Foreign keys" => count(sec).or_else(|| erd.map(|_| fk_cols.len())),
+                    _ => count(sec),
+                };
+                if let Some(n) = n {
+                    stat_tile(ui, p, crate::props::icon(sec), &n.to_string(), caption, color);
+                }
+            }
+        });
+    });
+    ui.add_space(8.0);
+
+    // ── sub-tabs: Columns, Diagram, then the rest ──
+    let n = props.sections.len();
+    let diagram = n; // virtual index of the Diagram tab
+    let has_diagram = erd.is_some() && !tt.is_view;
+    let mut order: Vec<usize> = (0..n).collect();
+    if has_diagram {
+        order.insert(1.min(n), diagram);
+    }
+    if tt.props_tab == usize::MAX && has_diagram {
+        tt.props_tab = diagram; // asked for the diagram before the answer came
+    }
+    if tt.props_tab > n || (tt.props_tab == diagram && !has_diagram) {
+        tt.props_tab = 0;
+    }
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        for (i, s) in props.sections.iter().enumerate() {
+        for &i in &order {
+            let (name, cnt) = if i == diagram { ("Diagram", erd.map(|e| e.tables.len().saturating_sub(1))) } else { (props.sections[i].name, props.sections[i].count()) };
             let sel = i == tt.props_tab;
-            let empty = s.count() == Some(0);
-            let label = match s.count() {
-                Some(n) if n > 0 => format!("{} {n}", s.name),
-                _ => s.name.to_string(),
+            let empty = cnt == Some(0);
+            let label = match cnt {
+                Some(k) if k > 0 => format!("{}  {name}  {k}", crate::props::icon(name)),
+                _ => format!("{}  {name}", crate::props::icon(name)),
             };
             let color = if sel { p.on_primary } else if empty { p.text_lighter } else { p.text_light };
             let b = egui::Button::new(RichText::new(label).color(color)).fill(if sel { p.primary } else { Color32::TRANSPARENT }).corner_radius(7);
-            if ui.add(b).clicked() && !sel {
+            if ui.add(b).on_hover_text(crate::props::about(name)).clicked() && !sel {
                 tt.props_tab = i;
                 tt.props_grid = GridState::default();
             }
         }
     });
-    ui.add_space(6.0);
-    let section = props.sections[tt.props_tab].clone();
+    let cur_name = if tt.props_tab == diagram { "Diagram" } else { props.sections[tt.props_tab].name };
+    ui.label(RichText::new(crate::props::about(cur_name)).size(12.0).color(p.text_light));
+    ui.add_space(4.0);
+
+    if tt.props_tab == diagram {
+        if erd.map(|e| e.fks.is_empty()).unwrap_or(true) {
+            ui.label(RichText::new("No foreign key touches this table: it stands on its own.").color(p.text_light));
+        }
+        if let Some(name) = widgets::er_diagram(ui, &mut tt.props_er, p).open {
+            if name != tt.table {
+                actions.push(Action::OpenTable(name));
+            }
+        }
+        return;
+    }
+
+    let section = &props.sections[tt.props_tab];
     match &section.body {
         crate::props::Body::Table(r) if r.rows.is_empty() => {
             ui.add_space(20.0);
-            ui.vertical_centered(|ui| ui.label(RichText::new(format!("No {} for this table.", section.name.to_lowercase())).color(p.text_light)));
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new(crate::props::icon(section.name)).size(28.0).color(p.text_lighter));
+                ui.label(RichText::new(format!("No {} for this table.", section.name.to_lowercase())).color(p.text_light));
+            });
+        }
+        // the column list, with keys and coloured types
+        crate::props::Body::Table(r) if section.name == "Columns" && col_idx(r, &["column"]).is_some() => {
+            let ci = col_idx(r, &["column"]).unwrap_or(1);
+            let ti = col_idx(r, &["type"]);
+            let ni = col_idx(r, &["nullable"]);
+            let di = col_idx(r, &["default"]);
+            let mi = col_idx(r, &["comment", "extra"]);
+            let pki = col_idx(r, &["primary key #"]);
+            egui::ScrollArea::vertical().id_salt(("pcols", id)).auto_shrink([false, false]).show(ui, |ui| {
+                egui::Grid::new(("pcolsg", id)).striped(true).num_columns(5).spacing(Vec2::new(14.0, 6.0)).show(ui, |ui| {
+                    for h in ["column", "type", "empty?", "default", "note"] {
+                        ui.label(RichText::new(h).size(11.5).strong().color(p.text_light));
+                    }
+                    ui.end_row();
+                    for row in &r.rows {
+                        let name = row.get(ci).map(|c| c.display()).unwrap_or_default();
+                        let pk = pk_cols.contains(&name) || pki.and_then(|i| row.get(i)).map(|c| !c.is_null() && c.display() != "0").unwrap_or(false);
+                        let fk = fk_cols.contains(&name);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            let (icon, col) = if pk { ("🔑", p.warning) } else if fk { ("🔗", p.secondary) } else { ("•", p.text_lighter) };
+                            ui.label(RichText::new(icon).color(col));
+                            ui.label(RichText::new(&name).strong().color(if pk { p.primary } else { p.text_dark }));
+                        })
+                        .response
+                        .on_hover_text(if pk { "primary key" } else if fk { "foreign key" } else { "" });
+                        let ty = ti.and_then(|i| row.get(i)).map(|c| c.display()).unwrap_or_default();
+                        if ty.is_empty() {
+                            ui.label("");
+                        } else {
+                            chip(ui, ty.to_lowercase(), type_color(p, &ty));
+                        }
+                        match ni.and_then(|i| row.get(i)) {
+                            _ if pk => ui.label(RichText::new("key: one per row").size(11.5).strong().color(p.primary)),
+                            Some(c) if truthy(c) => ui.label(RichText::new("may be empty").size(11.5).color(p.text_light)),
+                            Some(_) => ui.label(RichText::new("required").size(11.5).strong().color(p.danger)),
+                            None => ui.label(""),
+                        };
+                        let d = di.and_then(|i| row.get(i)).filter(|c| !c.is_null()).map(|c| c.display()).unwrap_or_default();
+                        ui.label(RichText::new(d).monospace().size(11.5).color(p.pink));
+                        let m = mi.and_then(|i| row.get(i)).filter(|c| !c.is_null()).map(|c| c.display()).unwrap_or_default();
+                        ui.label(RichText::new(m).italics().color(p.text_light));
+                        ui.end_row();
+                    }
+                });
+            });
+        }
+        // definitions as cards with their SQL highlighted
+        crate::props::Body::Table(r) if col_idx(r, &["definition"]).is_some() && r.rows.len() <= 300 => {
+            let def = col_idx(r, &["definition"]).unwrap_or(0);
+            let name_i = col_idx(r, &["name"]).unwrap_or(if def == 0 { 1 } else { 0 });
+            let mono = egui::TextStyle::Monospace.resolve(ui.style());
+            egui::ScrollArea::vertical().id_salt(("pcards", id, tt.props_tab)).auto_shrink([false, false]).show(ui, |ui| {
+                for row in &r.rows {
+                    egui::Frame::new().fill(p.panel_alt).stroke(Stroke::new(1.0, p.border)).corner_radius(10).inner_margin(10).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(crate::props::icon(section.name)).color(p.primary));
+                            ui.label(RichText::new(row.get(name_i).map(|c| c.display()).unwrap_or_default()).strong().color(p.text_dark));
+                            for (k, c) in row.iter().enumerate() {
+                                if k == def || k == name_i || c.is_null() {
+                                    continue;
+                                }
+                                let v = c.display();
+                                let col = &r.columns[k];
+                                if matches!(v.as_str(), "true" | "false") {
+                                    if v == "true" {
+                                        chip(ui, col.clone(), p.success);
+                                    }
+                                } else if !v.is_empty() {
+                                    chip(ui, format!("{col}: {v}"), p.text_light);
+                                }
+                            }
+                        });
+                        let sql = row.get(def).filter(|c| !c.is_null()).map(|c| c.display()).unwrap_or_default();
+                        if !sql.is_empty() {
+                            ui.add_space(4.0);
+                            egui::Frame::new().fill(p.editor_bg).corner_radius(6).inner_margin(8).show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                let job = widgets::sql_job(&sql, p, mono.clone(), ui.available_width());
+                                ui.add(egui::Label::new(job).selectable(true));
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.small_button("Copy").clicked() {
+                                    ui.ctx().copy_text(sql.clone());
+                                }
+                                if ui.small_button("Open in a query tab").clicked() {
+                                    actions.push(Action::OpenInEditor(sql.clone()));
+                                }
+                            });
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
+            });
+        }
+        // a single row of facts (Info): tiles
+        crate::props::Body::Table(r) if section.name == "Info" && r.rows.len() == 1 => {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                for (k, c) in r.columns.iter().zip(&r.rows[0]) {
+                    let v = if c.is_null() { "—".to_string() } else { c.display() };
+                    stat_tile(ui, p, "ℹ", &v, k, p.info);
+                }
+            });
         }
         crate::props::Body::Table(r) => {
             let h = ui.available_height();
@@ -229,7 +474,10 @@ fn props_panel(ui: &mut egui::Ui, tt: &mut TableTab, id: u64, p: &Palette, actio
             });
         }
         crate::props::Body::Note(n) => {
-            ui.label(RichText::new(n).color(p.warning));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("⚠").color(p.warning));
+                ui.label(RichText::new(n).color(p.warning));
+            });
         }
     }
 }
