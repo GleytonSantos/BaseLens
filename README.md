@@ -32,12 +32,12 @@ A free, private desktop editor for **SQLite**, **PostgreSQL** and **MySQL** — 
 | 🔑 **Argon2 / scrypt tool** | Make or check password hashes (Argon2id/i/d with adjustable memory, passes, lanes and length; scrypt with N, r, p) — `Ctrl+Shift+H`, or right-click a cell to check its hash or fill it with a new one. |
 | 🔐 **SSH tunnels** | Reach databases behind a bastion: BaseLens runs your system's `ssh` with your keys, ssh-agent and `~/.ssh/config`. |
 | ■ **Stop & time limit** | Stop a running query on the server (PostgreSQL cancel, MySQL `KILL QUERY`, SQLite interrupt), or let it stop after N seconds. |
-| ⓘ **Table properties** | One click (or right-click a table → Properties) shows Columns, Constraints, Foreign keys, References, Indexes, Triggers, Partitions, Rules, Policies, Dependencies, Permissions, size and the DDL — PostgreSQL, SQLite and MySQL. |
+| ⓘ **Table properties** | One click (or right-click a table → Properties) shows Columns, Constraints, Foreign keys, References, Indexes, Triggers, Partitions, Rules, Policies, Dependencies, Permissions, size and the DDL, with an overview card and the table's own relationship diagram — PostgreSQL, SQLite and MySQL. |
 | ✓ **Syntax check & lint** | The editor checks SQL offline for the connection's dialect a moment after you stop typing and underlines the error; **Ctrl+Shift+I** runs the sqruff linter (spacing, keyword case, aliases…) with one-click fixes; **Ctrl+Shift+F** formats with sqruff on top of BaseLens's layout. |
 | 🧭 **Visual EXPLAIN** | See the query plan as a tree with cost, rows and a bar for each step's share; *Run and measure* adds real times (PostgreSQL JSON plans, MySQL 8 tree plans, SQLite query plans). |
 | ✔ **Manual transactions** | Turn auto-commit off per connection; changes wait for **Commit** or **Rollback**, with an "uncommitted" marker in the status bar. |
 | ⬇ **Export anywhere** | CSV, JSON, Excel (XLSX), SQL INSERT statements, Markdown, HTML and XML. |
-| 📊 **See your data** | Built-in JSON viewer, charts and an ER diagram. |
+| 📊 **See your data** | Built-in JSON viewer, charts and an ER diagram you can zoom (Ctrl+wheel, Fit) and open tables from (double-click). |
 | 🤖 **AI assistant** | Local (Ollama / any OpenAI-compatible server), cloud (Anthropic, OpenAI, Google), or the native Claude Code CLI. Read-only queries can run without asking. |
 | 🔐 **Private by default** | Passwords encrypted on your computer with the system keyring, optional PIN lock on idle, read-only connections, verified TLS. |
 | 🌗 **Dark & light themes** | Follows your system, or pick one. |

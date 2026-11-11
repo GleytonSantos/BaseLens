@@ -1012,6 +1012,48 @@
       "group": "editor",
       "value": 8,
       "source": "table 0x20fd790 rows of 8 (lea (%rcx,%rax,8) at 0x685c0fd)"
+    },
+    {
+      "name": "ERD neighbour tables per table diagram",
+      "group": "properties",
+      "value": 30,
+      "source": "BaseLens design (props.rs ERD_MAX_NEIGHBOURS)"
+    },
+    {
+      "name": "ER diagram smallest zoom",
+      "group": "er",
+      "value": 0.25,
+      "source": "BaseLens design (widgets.rs ER_ZOOM_MIN)"
+    },
+    {
+      "name": "ER diagram largest zoom",
+      "group": "er",
+      "value": 2.5,
+      "source": "BaseLens design (widgets.rs ER_ZOOM_MAX)"
+    },
+    {
+      "name": "ER diagram zoom step of + / -",
+      "group": "er",
+      "value": 1.2,
+      "source": "BaseLens design (widgets.rs ER_ZOOM_STEP)"
+    },
+    {
+      "name": "ER table width",
+      "group": "er",
+      "value": 210,
+      "source": "BaseLens design (widgets.rs ER_W)"
+    },
+    {
+      "name": "ER table title height",
+      "group": "er",
+      "value": 28,
+      "source": "BaseLens design (widgets.rs ER_HEAD)"
+    },
+    {
+      "name": "ER column row height",
+      "group": "er",
+      "value": 19,
+      "source": "BaseLens design (widgets.rs ER_ROW)"
     }
   ]
 }
