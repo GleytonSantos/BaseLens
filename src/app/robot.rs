@@ -554,6 +554,36 @@ impl App {
                     }
                 }
             }
+            // 23: the lint runs by itself and offers a fix that can be applied
+            23 => {
+                if r.waited == 1 {
+                    if let Some(s) = r.sid {
+                        let id = self.new_query_tab(s, "SELECT id from products".into());
+                        self.active_tab = Some(id);
+                    }
+                } else if r.waited > 2 {
+                    let q = self.tabs.iter_mut().find(|t| Some(t.id) == self.active_tab).and_then(|t| match &mut t.kind {
+                        TabKind::Query(q) => Some(q),
+                        _ => None,
+                    });
+                    if let Some(q) = q {
+                        let ready = q.live_lint.as_ref().map(|(h, _)| *h == q.checked && q.edited.is_none()).unwrap_or(false);
+                        if ready {
+                            let (n, hunks) = q.live_lint.as_ref().map(|(_, l)| (l.findings.len(), l.hunks.len())).unwrap_or((0, 0));
+                            r.check(n > 0 && hunks > 0, &format!("the lint runs by itself: {n} finding(s), {hunks} fix(es) shown inline"));
+                            let applied = super::views::apply_live_fix(q, Some(0));
+                            r.check(applied && q.sql == "SELECT id FROM products", &format!("applying the inline fix gives {:?}", q.sql));
+                            next(r);
+                        } else if r.waited > 600 {
+                            r.check(false, "the lint runs by itself after typing stops");
+                            next(r);
+                        }
+                    } else {
+                        r.check(false, "a query tab is open for the lint check");
+                        next(r);
+                    }
+                }
+            }
             _ => r.done = true,
         }
     }

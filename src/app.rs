@@ -170,6 +170,11 @@ struct QueryTab {
     /// sqruff lint shown instead of the results, and one being computed
     lint: Option<Result<Vec<crate::sql::Violation>, String>>,
     lint_rx: Option<std::sync::mpsc::Receiver<Result<Vec<crate::sql::Violation>, String>>>,
+    /// lint run by itself after each pause in typing: (hash of the text it
+    /// is for, result), the one being computed, and the inline list hidden
+    live_lint: Option<(u64, crate::sql::LiveLint)>,
+    live_rx: Option<std::sync::mpsc::Receiver<(u64, Result<crate::sql::LiveLint, String>)>>,
+    lint_hidden: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -1734,6 +1739,12 @@ impl App {
                         q.view = View::Chart;
                     }
                 }
+                self.run_query_tab(id, false);
+                self.demo_setup = 3;
+            }
+        } else if self.demo_setup == 1 && scene == "lint" {
+            if let Some(sid) = self.open.first().filter(|o| o.status == ConnStatus::Ready).map(|o| o.sid) {
+                let id = self.new_query_tab(sid, "SELECT id, name\nfrom products\nWHERE price>10 AND stock = 0;".to_string());
                 self.run_query_tab(id, false);
                 self.demo_setup = 3;
             }

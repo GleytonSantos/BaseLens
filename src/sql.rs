@@ -17,6 +17,116 @@ pub const VALIDATE_MAX_BYTES: usize = 200_000;
 pub const VALIDATE_DEBOUNCE_MS: u64 = 600;
 /// Longest text Format sends through sqruff (longer: BaseLens's layout only).
 pub const FORMAT_SQRUFF_MAX_BYTES: usize = 20_000;
+/// Longest SQL linted automatically while typing (longer: Ctrl+Shift+I).
+pub const LINT_LIVE_MAX_BYTES: usize = 20_000;
+/// Most lines compared when the fixed text is split into one fix per place
+/// (longer texts get a single fix for everything).
+pub const FIX_DIFF_MAX_LINES: usize = 2_000;
+
+/// One place sqruff's fix changes: these lines (0-based start) become those.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FixHunk {
+    pub old_start: usize,
+    pub old_lines: Vec<String>,
+    pub new_lines: Vec<String>,
+}
+
+/// The lint done while typing: findings, the fixed text, and that fix cut
+/// into places so each can be applied alone.
+#[derive(Clone, Debug, Default)]
+pub struct LiveLint {
+    pub findings: Vec<Violation>,
+    pub fixed: Option<String>,
+    pub hunks: Vec<FixHunk>,
+}
+
+impl LiveLint {
+    /// The fix that changes the finding's line (1-based), if any.
+    pub fn hunk_for(&self, line: usize) -> Option<usize> {
+        let l = line.saturating_sub(1);
+        self.hunks
+            .iter()
+            .position(|h| if h.old_lines.is_empty() { h.old_start == l } else { h.old_start <= l && l < h.old_start + h.old_lines.len() })
+    }
+}
+
+/// Lines that differ between two texts, grouped into places (longest common
+/// subsequence of lines).
+pub fn fix_hunks(old: &str, new: &str) -> Vec<FixHunk> {
+    if old == new {
+        return Vec::new();
+    }
+    let a: Vec<&str> = old.split('\n').collect();
+    let b: Vec<&str> = new.split('\n').collect();
+    let whole = || vec![FixHunk { old_start: 0, old_lines: a.iter().map(|s| s.to_string()).collect(), new_lines: b.iter().map(|s| s.to_string()).collect() }];
+    if a.len() > FIX_DIFF_MAX_LINES || b.len() > FIX_DIFF_MAX_LINES {
+        return whole();
+    }
+    let (n, m) = (a.len(), b.len());
+    // lcs[i][j] = common lines of a[i..] and b[j..]
+    let mut lcs = vec![0u32; (n + 1) * (m + 1)];
+    let at = |i: usize, j: usize| i * (m + 1) + j;
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[at(i, j)] = if a[i] == b[j] { lcs[at(i + 1, j + 1)] + 1 } else { lcs[at(i + 1, j)].max(lcs[at(i, j + 1)]) };
+        }
+    }
+    let mut out: Vec<FixHunk> = Vec::new();
+    let mut cur: Option<FixHunk> = None;
+    let (mut i, mut j) = (0, 0);
+    while i < n || j < m {
+        if i < n && j < m && a[i] == b[j] {
+            if let Some(h) = cur.take() {
+                out.push(h);
+            }
+            i += 1;
+            j += 1;
+            continue;
+        }
+        let h = cur.get_or_insert_with(|| FixHunk { old_start: i, old_lines: Vec::new(), new_lines: Vec::new() });
+        if j < m && (i == n || lcs[at(i, j + 1)] >= lcs[at(i + 1, j)]) {
+            h.new_lines.push(b[j].to_string());
+            j += 1;
+        } else {
+            h.old_lines.push(a[i].to_string());
+            i += 1;
+        }
+    }
+    if let Some(h) = cur {
+        out.push(h);
+    }
+    // lines changed one for one: one fix per line, so each can be applied alone
+    out.into_iter()
+        .flat_map(|h| {
+            if h.old_lines.len() == h.new_lines.len() && h.old_lines.len() > 1 {
+                (0..h.old_lines.len())
+                    .map(|k| FixHunk { old_start: h.old_start + k, old_lines: vec![h.old_lines[k].clone()], new_lines: vec![h.new_lines[k].clone()] })
+                    .collect::<Vec<_>>()
+            } else {
+                vec![h]
+            }
+        })
+        .collect()
+}
+
+/// The text with one fix applied, if its lines are still where they were.
+pub fn apply_hunk(text: &str, h: &FixHunk) -> Option<String> {
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    let end = h.old_start + h.old_lines.len();
+    if end > lines.len() || lines[h.old_start..end].iter().zip(&h.old_lines).any(|(x, y)| x != y) {
+        return None;
+    }
+    lines.splice(h.old_start..end, h.new_lines.iter().map(|s| s.as_str()));
+    Some(lines.join("\n"))
+}
+
+/// Lint plus the fix cut into places, for the editor while typing.
+pub fn live_lint(sql: &str, kind: DbKind) -> Result<LiveLint, String> {
+    let findings = lint(sql, kind)?;
+    let fixed = if findings.iter().any(|f| f.fixable) { fix(sql, kind).ok().filter(|f| f != sql) } else { None };
+    let hunks = fixed.as_deref().map(|f| fix_hunks(sql, f)).unwrap_or_default();
+    Ok(LiveLint { findings, fixed, hunks })
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SqlError {

@@ -90,6 +90,77 @@ fn char_index(text: &str, line: usize, col: usize) -> usize {
     text.chars().count()
 }
 
+/// Most height of the lint list under the editor.
+const LINT_INLINE_MAX_HEIGHT: f32 = 150.0;
+
+/// What the editor shows when the pointer rests on a marked word.
+struct MarkInfo {
+    title: String,
+    desc: String,
+    color: Color32,
+    hunk: Option<crate::sql::FixHunk>,
+}
+
+fn lint_color(p: &Palette, f: &crate::sql::Violation) -> Color32 {
+    if f.code == "PRS" {
+        p.danger
+    } else if f.fixable {
+        p.warning
+    } else {
+        p.info
+    }
+}
+
+/// The live lint, when it is for the text in the editor now.
+fn live_now(q: &QueryTab) -> Option<&crate::sql::LiveLint> {
+    q.live_lint.as_ref().filter(|(h, _)| q.edited.is_none() && *h == q.checked).map(|(_, l)| l)
+}
+
+/// Applies one place of the live fix (or all of it with None). False when
+/// the text changed since it was linted.
+pub(super) fn apply_live_fix(q: &mut QueryTab, idx: Option<usize>) -> bool {
+    let Some(l) = live_now(q) else { return false };
+    let new = match idx {
+        Some(i) => l.hunks.get(i).and_then(|h| crate::sql::apply_hunk(&q.sql, h)),
+        None => l.fixed.clone(),
+    };
+    match new {
+        Some(n) => {
+            q.sql = n;
+            q.edited = Some(Instant::now());
+            q.live_lint = None;
+            true
+        }
+        None => false,
+    }
+}
+
+/// A fix as removed / added lines.
+fn fix_diff(ui: &mut egui::Ui, h: &crate::sql::FixHunk, p: &Palette) {
+    egui::Frame::new().fill(p.editor_bg).corner_radius(6).inner_margin(Margin::symmetric(8, 4)).show(ui, |ui| {
+        ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 1.0;
+        for l in &h.old_lines {
+            ui.label(RichText::new(format!("− {l}")).monospace().size(12.0).color(p.danger).background_color(p.danger.gamma_multiply(0.08)));
+        }
+        for l in &h.new_lines {
+            ui.label(RichText::new(format!("+ {l}")).monospace().size(12.0).color(p.success).background_color(p.success.gamma_multiply(0.08)));
+        }
+        });
+    });
+}
+
+fn lint_tooltip(ui: &mut egui::Ui, info: &MarkInfo, p: &Palette) {
+    ui.label(RichText::new(&info.title).strong().color(info.color));
+    ui.label(&info.desc);
+    if let Some(h) = &info.hunk {
+        ui.add_space(4.0);
+        ui.label(RichText::new("Fix:").small().color(p.text_light));
+        fix_diff(ui, h, p);
+        ui.label(RichText::new("Ctrl+.  applies it").small().color(p.text_lighter));
+    }
+}
+
 /// Runs sqruff on another thread (it can take a moment on long scripts).
 fn start_lint(q: &mut QueryTab, kind: crate::db::DbKind) {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -677,10 +748,30 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
     let scale = egui::TextStyle::Body.resolve(ui.style()).size / 13.5;
     let font = egui::FontId::monospace(EDITOR_FONT_SIZE * scale);
     let pal = *p;
-    // underline the offline syntax error (only while the text is the one checked)
-    let mark = if q.edited.is_none() { q.syntax.as_ref().and_then(|e| crate::sql::error_range(&q.sql, e.line, e.col)) } else { None };
+    // underline the offline syntax error and the live lint findings (only
+    // while the text is the one checked)
+    let mut marks: Vec<(std::ops::Range<usize>, Color32)> = Vec::new();
+    let mut mark_info: Vec<MarkInfo> = Vec::new();
+    if q.edited.is_none() {
+        if let Some(e) = &q.syntax {
+            if let Some(r) = crate::sql::error_range(&q.sql, e.line, e.col) {
+                marks.push((r, p.danger));
+                mark_info.push(MarkInfo { title: format!("Syntax ({})", kind.label()), desc: e.message.clone(), color: p.danger, hunk: None });
+            }
+        }
+    }
+    if let Some(l) = live_now(q) {
+        for f in &l.findings {
+            if let Some(r) = crate::sql::error_range(&q.sql, f.line, f.col) {
+                let color = lint_color(p, f);
+                marks.push((r, color));
+                mark_info.push(MarkInfo { title: format!("{} · {}", f.code, f.name), desc: f.desc.clone(), color, hunk: l.hunk_for(f.line).map(|i| l.hunks[i].clone()) });
+            }
+        }
+    }
+    let lay_marks = marks.clone();
     let mut layouter = move |ui: &egui::Ui, text: &str, wrap: f32| {
-        let job = widgets::sql_job_marked(text, &pal, font.clone(), wrap, mark.clone());
+        let job = widgets::sql_job_marked(text, &pal, font.clone(), wrap, &lay_marks);
         ui.fonts(|f| f.layout_job(job))
     };
     let mut caret_pos: Option<egui::Pos2> = None;
@@ -699,6 +790,15 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
             has_focus = out.response.has_focus();
             // where the editor is, for the test robot
             ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("robot_editor_rect"), out.response.rect));
+            // resting on a marked word: what's wrong and its fix
+            if let Some(hp) = out.response.hover_pos() {
+                let ci = out.galley.cursor_from_pos(hp - out.galley_pos).ccursor.index;
+                let bi = q.sql.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(q.sql.len());
+                if let Some(k) = marks.iter().position(|(r, _)| r.start <= bi && bi < r.end) {
+                    let info = &mark_info[k];
+                    out.response.clone().on_hover_ui_at_pointer(|ui| lint_tooltip(ui, info, &pal));
+                }
+            }
             if let Some(cr) = out.cursor_range {
                 q.cursor = (cr.primary.ccursor.index, cr.secondary.ccursor.index);
                 let r = out.galley.pos_from_cursor(&cr.primary);
@@ -728,6 +828,13 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
             q.ac.last_text_len = q.sql.len();
         });
     });
+    // Ctrl+. applies the fix on the caret's line
+    if has_focus && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Period)) {
+        let line = q.sql.chars().take(q.cursor.0).filter(|c| *c == '\n').count() + 1;
+        if let Some(i) = live_now(q).and_then(|l| l.hunk_for(line)) {
+            apply_live_fix(q, Some(i));
+        }
+    }
     let mut value_loading: Option<String> = None;
     if q.ac.open {
         let (start, items) = assist::suggest(&q.sql, q.cursor.0, schema, q.ac.forced);
@@ -805,6 +912,17 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
             if h != q.checked {
                 q.checked = h;
                 q.syntax = if q.sql.len() <= crate::sql::VALIDATE_MAX_BYTES { crate::sql::validate(&q.sql, kind).err() } else { None };
+                // and sqruff, on its own thread
+                q.live_lint = None;
+                q.live_rx = None;
+                if q.sql.len() <= crate::sql::LINT_LIVE_MAX_BYTES && !q.sql.trim().is_empty() {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let sql = q.sql.clone();
+                    std::thread::spawn(move || {
+                        let _ = tx.send((h, crate::sql::live_lint(&sql, kind)));
+                    });
+                    q.live_rx = Some(rx);
+                }
             }
         } else {
             ctx.request_repaint_after(std::time::Duration::from_millis(crate::sql::VALIDATE_DEBOUNCE_MS));
@@ -814,7 +932,29 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
         q.edited = Some(Instant::now() - std::time::Duration::from_millis(crate::sql::VALIDATE_DEBOUNCE_MS));
         ctx.request_repaint();
     }
+    if let Some(rx) = &q.live_rx {
+        match rx.try_recv() {
+            Ok((h, r)) => {
+                q.live_rx = None;
+                if h == q.checked {
+                    q.live_lint = r.ok().map(|l| (h, l));
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+            Err(_) => q.live_rx = None,
+        }
+    }
+    let live: Option<crate::sql::LiveLint> = live_now(q).filter(|l| !l.findings.is_empty()).cloned();
     ui.horizontal(|ui| {
+        if let Some(l) = &live {
+            let fx = l.findings.iter().filter(|f| f.fixable).count();
+            let text = if fx > 0 { format!("⚑ {} lint · {fx} fixable", l.findings.len()) } else { format!("⚑ {} lint", l.findings.len()) };
+            if ui.add(egui::Button::new(RichText::new(text).small().color(p.warning)).small().fill(Color32::TRANSPARENT)).on_hover_text("Show or hide the lint list").clicked() {
+                q.lint_hidden = !q.lint_hidden;
+            }
+        } else if q.live_rx.is_some() {
+            ui.label(RichText::new("linting…").small().color(p.text_lighter));
+        }
         match (&q.syntax, q.edited.is_some()) {
             (Some(e), false) => {
                 let at = if e.line > 0 { format!("line {}, col {}: ", e.line, e.col) } else { String::new() };
@@ -826,8 +966,67 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
             }
             _ => {}
         }
-        ui.label(RichText::new("Ctrl+Space suggest · Ctrl+Shift+F format · Ctrl+Shift+I lint · Ctrl+Enter run").small().color(p.text_lighter));
+        ui.label(RichText::new("Ctrl+Space suggest · Ctrl+. fix · Ctrl+Shift+F format · Ctrl+Enter run").small().color(p.text_lighter));
     });
+    // the lint findings, each with its fix, under the editor
+    if let (Some(l), false) = (&live, q.lint_hidden) {
+        let mut apply: Option<Option<usize>> = None;
+        let mut go_to: Option<(usize, usize)> = None;
+        egui::Frame::new().fill(p.panel_alt).stroke(Stroke::new(1.0, p.border)).corner_radius(8).inner_margin(Margin::symmetric(8, 6)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("⚑ Lint").strong().color(p.text_dark));
+                let fx = l.findings.iter().filter(|f| f.fixable).count();
+                ui.label(RichText::new(format!("{} finding(s), {fx} with a fix · checked as you type (sqruff)", l.findings.len())).small().color(p.text_light));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Hide").clicked() {
+                        q.lint_hidden = true;
+                    }
+                    if l.fixed.is_some() && ui.add(egui::Button::new(RichText::new("✓ Fix all").small().strong().color(p.on_primary)).fill(p.primary).corner_radius(6)).on_hover_text("Applies every fix (undo with Ctrl+Z)").clicked() {
+                        apply = Some(None);
+                    }
+                });
+            });
+            egui::ScrollArea::vertical().id_salt(("livelint", id)).max_height(LINT_INLINE_MAX_HEIGHT).auto_shrink([false, true]).show(ui, |ui| {
+                let mut shown: Vec<usize> = Vec::new();
+                for f in &l.findings {
+                    let color = lint_color(p, f);
+                    let hunk = l.hunk_for(f.line);
+                    let first = hunk.map(|h| !shown.contains(&h)).unwrap_or(false);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("●").color(color));
+                        if ui.link(RichText::new(format!("{}:{}", f.line, f.col)).monospace().small()).on_hover_text("Go there").clicked() {
+                            go_to = Some((f.line, f.col));
+                        }
+                        ui.label(RichText::new(&f.code).monospace().small().color(color)).on_hover_text(&f.name);
+                        ui.label(RichText::new(&f.desc).small().color(p.text_dark));
+                        if let (Some(h), true) = (hunk, first) {
+                            if ui.small_button("Apply fix").on_hover_text("Ctrl+. on that line does the same").clicked() {
+                                apply = Some(Some(h));
+                            }
+                        } else if hunk.is_some() {
+                            ui.label(RichText::new("(same fix as above)").small().color(p.text_lighter));
+                        }
+                    });
+                    if let (Some(h), true) = (hunk, first) {
+                        shown.push(h);
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
+                            fix_diff(ui, &l.hunks[h], p);
+                        });
+                    }
+                }
+            });
+        });
+        if let Some(a) = apply {
+            apply_live_fix(q, a);
+        }
+        if let Some((ln, c)) = go_to {
+            let pos = char_index(&q.sql, ln, c);
+            set_cursor(&ctx, ed_id, pos);
+            ctx.memory_mut(|m| m.request_focus(ed_id));
+        }
+    }
     // drag handle between editor and results
     let (hr, hresp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 8.0), Sense::drag());
     let mid = hr.center();

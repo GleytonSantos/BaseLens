@@ -180,24 +180,35 @@ pub fn sql_tokens(text: &str) -> Vec<(std::ops::Range<usize>, SqlTok)> {
 }
 
 /// Like `sql_job`, with `mark` (a byte range) underlined as an error.
-pub fn sql_job_marked(text: &str, p: &Palette, font: FontId, wrap: f32, mark: Option<std::ops::Range<usize>>) -> LayoutJob {
-    let Some(m) = mark.filter(|m| m.start < m.end && m.end <= text.len()) else {
+pub fn sql_job_marked(text: &str, p: &Palette, font: FontId, wrap: f32, marks: &[(std::ops::Range<usize>, Color32)]) -> LayoutJob {
+    let marks: Vec<(std::ops::Range<usize>, Color32)> = marks
+        .iter()
+        .filter(|(m, _)| m.start < m.end && m.end <= text.len() && text.is_char_boundary(m.start) && text.is_char_boundary(m.end))
+        .cloned()
+        .collect();
+    if marks.is_empty() {
         return sql_job(text, p, font, wrap);
-    };
+    }
     let base = sql_job(text, p, font, wrap);
     let mut job = LayoutJob::default();
     job.wrap = base.wrap.clone();
     for sec in &base.sections {
         let r = sec.byte_range.clone();
-        let cuts = [r.start, m.start.clamp(r.start, r.end), m.end.clamp(r.start, r.end), r.end];
-        for w in cuts.windows(2) {
-            if w[0] >= w[1] {
-                continue;
+        let mut cuts = vec![r.start, r.end];
+        for (m, _) in &marks {
+            for b in [m.start, m.end] {
+                if b > r.start && b < r.end {
+                    cuts.push(b);
+                }
             }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for w in cuts.windows(2) {
             let mut f = sec.format.clone();
-            if w[0] >= m.start && w[1] <= m.end {
-                f.underline = Stroke::new(2.0, p.danger);
-                f.background = p.danger.gamma_multiply(0.15);
+            if let Some((_, c)) = marks.iter().find(|(m, _)| m.start <= w[0] && w[1] <= m.end) {
+                f.underline = Stroke::new(2.0, *c);
+                f.background = c.gamma_multiply(0.15);
             }
             job.append(&text[w[0]..w[1]], 0.0, f);
         }

@@ -697,3 +697,43 @@ fn sqlite_complete_matches_sqlite() {
         assert_eq!(((ER_ZOOM_MIN as f64) * 100.0) as i32, 25);
         assert_eq!(((ER_ZOOM_MAX as f64) * 100.0) as i32, 500);
 }
+
+#[test]
+fn fix_hunks_split_a_fix_into_places() {
+    use crate::sql::*;
+    let old = "select a\nfrom t\nwhere b=1\norder by a";
+    let new = "select a\nfrom t\nwhere b = 1\norder by a";
+    let h = fix_hunks(old, new);
+    assert_eq!(h, vec![FixHunk { old_start: 2, old_lines: vec!["where b=1".into()], new_lines: vec!["where b = 1".into()] }]);
+    assert_eq!(apply_hunk(old, &h[0]).as_deref(), Some(new));
+    // a fix whose lines moved away is refused
+    assert_eq!(apply_hunk("select a\nwhere b=1", &h[0]), None);
+    // added and removed lines
+    let h = fix_hunks("a\nb\nc", "a\nc\nd");
+    assert_eq!(h.len(), 2);
+    let mut t = "a\nb\nc".to_string();
+    for x in h.iter().rev() {
+        t = apply_hunk(&t, x).unwrap();
+    }
+    assert_eq!(t, "a\nc\nd");
+    assert!(fix_hunks("same", "same").is_empty());
+}
+
+#[test]
+fn neighbouring_line_fixes_stay_separate() {
+    let h = crate::sql::fix_hunks("a\nb=1\nc=2\nd", "a\nb = 1\nc = 2\nd");
+    assert_eq!(h.iter().map(|x| x.old_start).collect::<Vec<_>>(), [1, 2]);
+    assert_eq!(crate::sql::apply_hunk("a\nb=1\nc=2\nd", &h[1]).as_deref(), Some("a\nb=1\nc = 2\nd"));
+}
+
+#[cfg(feature = "lint")]
+#[test]
+fn live_lint_offers_a_fix_per_place() {
+    let l = crate::sql::live_lint("SELECT id from products", DbKind::Sqlite).unwrap();
+    assert!(!l.findings.is_empty(), "{:?}", l.findings);
+    assert_eq!(l.fixed.as_deref(), Some("SELECT id FROM products"));
+    let i = l.hunk_for(l.findings[0].line).expect("finding has a fix");
+    assert_eq!(crate::sql::apply_hunk("SELECT id from products", &l.hunks[i]).as_deref(), Some("SELECT id FROM products"));
+    // clean SQL: nothing to say
+    assert!(crate::sql::live_lint("SELECT id FROM products", DbKind::Sqlite).unwrap().findings.is_empty());
+}
