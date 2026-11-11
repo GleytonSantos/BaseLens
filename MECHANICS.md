@@ -432,3 +432,15 @@ Checked against a real SQLite (the bundled one): a join with ORDER BY shows SCAN
 - **Format** (Ctrl+Shift+F): BaseLens's layout (one clause per line, keyword case kept) and then sqruff's fixes on top, for text up to 20 000 bytes (`FORMAT_SQRUFF_MAX_BYTES`, sqruff runs on the window's thread here); larger text, SQL sqruff can't read, or a build without the linter keep BaseLens's layout alone. Formatting twice gives the same text.
 - **Size**: release binary 25.9 MB → 32.4 MB with sqlparser → 59.1 MB with sqruff (gzip 10.9 → 13.3 → 21.2 MB); sqruff brings all 26 of its dialects and can't be trimmed from outside. `--no-default-features` drops the `lint` feature (lint/fix report that they aren't in this build).
 - Tests: `validates_per_dialect`, `underlines_the_word_at_the_error`, `lints_and_fixes`, `format_is_stable`; robot step 21 types `select * frm orders` and checks the warning appears.
+
+
+## Round 34 — decompiled: SQLite's own syntax errors, used by the editor check
+
+Read with native_function_pseudocode on **`sqlite3RunParser` 0x685aca0** (found from the strings "incomplete input" 0xefd511, `near "%T": syntax error` 0xfa43a4 and `unrecognized token: "%T"` 0x13a7aa4):
+
+- It reads tokens with `sqlite3GetToken` (0x685a620, Round 17) while subtracting each token's length from the SQL length limit (`db->aLimit[SQLITE_LIMIT_SQL_LENGTH]`, +0x8c); going over it fails with SQLITE_TOOBIG (0x12).
+- Spaces and comments (token 0xb8) are skipped; a token the tokenizer can't read (TK_ILLEGAL) stops with **`unrecognized token: "%T"`**.
+- When the grammar can't continue: if the parser is at the end of the text (`*zSql == 0`) the message is **`incomplete input`**, otherwise **`near "%T": syntax error`** with the offending token.
+- Errors are logged as `"%s in \"%s\""` (message in SQL). Name problems ("no such table", "no such column") come later, from name resolution, not from this parser.
+
+Used in the build (`sql.rs::validate_sqlite`): for SQLite connections the editor's syntax check no longer uses sqlparser's SQLite dialect but **SQLite itself** (the bundled engine): each statement is prepared on an empty in-memory database (preparing never runs anything, so DDL like `CREATE`/`DROP` is safe), and only those three messages count as syntax errors — unknown tables and columns are ignored offline. The position comes from SQLite's error offset (`sqlite3_error_offset`); "incomplete input" points at the end of the statement. So the warning in the editor is word for word what SQLite will say, e.g. `near "frm": syntax error` at line 2, col 10, and SQLite-only syntax (`INSERT OR REPLACE … RETURNING`, `PRAGMA`, `INDEXED BY`) is judged by the real grammar. PostgreSQL and MySQL keep sqlparser. Test `sqlite_uses_its_own_parser_and_words`.

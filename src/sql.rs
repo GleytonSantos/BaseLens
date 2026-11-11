@@ -65,10 +65,67 @@ fn position_in(msg: &str) -> (usize, usize) {
     (num_after("Line: "), num_after("Column: "))
 }
 
+/// SQLite's only three syntax-error messages, as `sqlite3RunParser`
+/// (0x685aca0 in the original) writes them: a token the tokenizer can't read
+/// (TK_ILLEGAL) → `unrecognized token: "%T"`; a parse error at the end of the
+/// text → `incomplete input`; any other parse error → `near "%T": syntax
+/// error`. Every other error (no such table, no such column…) comes later,
+/// from name resolution, and isn't a syntax error.
+pub const SQLITE_SYNTAX_MESSAGES: [&str; 3] = ["unrecognized token: \"", "incomplete input", "near \""];
+
+fn is_sqlite_syntax_error(msg: &str) -> bool {
+    SQLITE_SYNTAX_MESSAGES.iter().any(|p| msg.starts_with(p)) && (!msg.starts_with("near \"") || msg.ends_with(": syntax error"))
+}
+
+/// Byte offset → (line, column), both 1-based, column in characters.
+fn line_col(text: &str, byte: usize) -> (usize, usize) {
+    let byte = byte.min(text.len());
+    let before = &text[..text.floor_char_boundary(byte)];
+    let line = before.matches('\n').count() + 1;
+    let col = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+    (line, col)
+}
+
+/// SQLite: the engine's own parser (the bundled SQLite, the same code the
+/// original ships). Each statement is prepared on an empty in-memory
+/// database — preparing never runs anything — and only syntax errors count.
+fn validate_sqlite(sql: &str) -> Result<(), SqlError> {
+    let Ok(c) = rusqlite::Connection::open_in_memory() else { return Ok(()) };
+    let mut from = 0;
+    for stmt in crate::db::split_statements(sql) {
+        let start = sql[from..].find(&stmt).map(|i| from + i).unwrap_or(from);
+        from = start + stmt.len();
+        let err = match c.prepare(&stmt) {
+            Ok(_) => continue,
+            Err(e) => e,
+        };
+        let (msg, offset) = match &err {
+            rusqlite::Error::SqlInputError { msg, offset, .. } => (msg.clone(), (*offset >= 0).then_some(*offset as usize)),
+            rusqlite::Error::SqliteFailure(_, Some(m)) => (m.clone(), None),
+            other => (other.to_string(), None),
+        };
+        if !is_sqlite_syntax_error(&msg) {
+            continue;
+        }
+        // "incomplete input" points at the end of the statement
+        let at = match offset {
+            Some(o) => start + o,
+            None if msg == "incomplete input" => start + stmt.trim_end().len(),
+            None => start,
+        };
+        let (line, col) = line_col(sql, at);
+        return Err(SqlError { line, col, message: msg });
+    }
+    Ok(())
+}
+
 /// Offline syntax check. Ok for empty text.
 pub fn validate(sql: &str, kind: DbKind) -> Result<(), SqlError> {
     if crate::db::split_statements(sql).is_empty() {
         return Ok(());
+    }
+    if kind == DbKind::Sqlite {
+        return validate_sqlite(sql);
     }
     let d = parser_dialect(kind);
     match sqlparser::parser::Parser::parse_sql(d.as_ref(), sql) {
@@ -199,6 +256,25 @@ mod tests {
         assert_eq!(validate("select `id` from `users` limit 1, 10", DbKind::Mysql), Ok(()));
         // dollar-quoted bodies
         assert_eq!(validate("create function f() returns int as $$ select 1 $$ language sql", DbKind::Postgres), Ok(()));
+    }
+
+    #[test]
+    fn sqlite_uses_its_own_parser_and_words() {
+        let e = validate("select 1;\nselect * frm t", DbKind::Sqlite).unwrap_err();
+        assert_eq!(e.message, "near \"frm\": syntax error");
+        assert_eq!((e.line, e.col), (2, 10));
+        let e = validate("select (1", DbKind::Sqlite).unwrap_err();
+        assert_eq!(e.message, "incomplete input");
+        let e = validate("select x'zz'", DbKind::Sqlite).unwrap_err();
+        assert!(e.message.starts_with("unrecognized token: \""), "{e:?}");
+        // not syntax: unknown tables are fine offline
+        assert_eq!(validate("select * from nope; select missing_col from t2", DbKind::Sqlite), Ok(()));
+        // SQLite-only syntax sqlparser may not know
+        assert_eq!(validate("select * from t where rowid = 1 indexed by i", DbKind::Sqlite).map_err(|e| e.message.contains("syntax")), Err(true));
+        assert_eq!(validate("insert or replace into t(a) values (1) returning *", DbKind::Sqlite), Ok(()));
+        assert_eq!(validate("pragma table_info('t')", DbKind::Sqlite), Ok(()));
+        // nothing is run while checking
+        assert_eq!(validate("create table z(a); drop table z", DbKind::Sqlite), Ok(()));
     }
 
     #[test]

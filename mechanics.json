@@ -976,6 +976,24 @@
       "group": "editor",
       "value": 20000,
       "source": "BaseLens design (src/sql.rs) FORMAT_SQRUFF_MAX_BYTES"
+    },
+    {
+      "name": "SQLite syntax error: illegal token",
+      "group": "editor",
+      "value": "unrecognized token: \"",
+      "source": "sqlite3RunParser 0x685aca0 (string 0x13a7aa4)"
+    },
+    {
+      "name": "SQLite syntax error: end of text",
+      "group": "editor",
+      "value": "incomplete input",
+      "source": "sqlite3RunParser 0x685aca0 (string 0xefd511)"
+    },
+    {
+      "name": "SQLite syntax error: other",
+      "group": "editor",
+      "value": "near \"",
+      "source": "sqlite3RunParser 0x685aca0 (string 0xfa43a4, near \"%T\": syntax error)"
     }
   ]
 }
