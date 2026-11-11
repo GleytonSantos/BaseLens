@@ -1213,11 +1213,23 @@ pub struct ErState {
     pub pan: Vec2,
     pub loaded: bool,
     pub zoom: f32,
+    /// the table a per-table diagram is about (drawn highlighted)
+    pub focus: Option<String>,
+    /// fit everything in view on the next frame
+    pub fit_pending: bool,
 }
 
 const ER_W: f32 = 210.0;
 const ER_HEAD: f32 = 28.0;
 const ER_ROW: f32 = 19.0;
+/// Zoom limits and the step of the + / − buttons.
+pub const ER_ZOOM_MIN: f32 = 0.25;
+pub const ER_ZOOM_MAX: f32 = 2.5;
+pub const ER_ZOOM_STEP: f32 = 1.2;
+
+fn er_height(cols: usize) -> f32 {
+    ER_HEAD + cols as f32 * ER_ROW + 6.0
+}
 
 impl ErState {
     pub fn set(&mut self, tables: Vec<(String, Vec<ColumnInfo>)>, fks: Vec<ForeignKey>) {
@@ -1232,24 +1244,121 @@ impl ErState {
                 row_h = 0.0;
             }
             let x = 20.0 + (i % per_row) as f32 * (ER_W + 70.0);
-            row_h = row_h.max(ER_HEAD + cols.len() as f32 * ER_ROW + 8.0);
+            row_h = row_h.max(er_height(cols.len()) + 2.0);
             self.tables.push(ErTable { name, cols, pos: Pos2::new(x, y) });
         }
         self.fks = fks;
         self.loaded = true;
         self.zoom = 1.0;
+        self.focus = None;
+        self.fit_pending = true;
+    }
+
+    /// One table in the middle, the tables it points at on the right and
+    /// the tables pointing at it on the left (both stacked).
+    pub fn set_focus(&mut self, center: &str, tables: Vec<(String, Vec<ColumnInfo>)>, fks: Vec<ForeignKey>) {
+        let gap_x = 110.0;
+        let gap_y = 28.0;
+        let parents: Vec<String> = fks.iter().filter(|f| f.from_table == center && f.to_table != center).map(|f| f.to_table.clone()).collect();
+        let children: Vec<String> = fks.iter().filter(|f| f.to_table == center && f.from_table != center).map(|f| f.from_table.clone()).collect();
+        let col_x = |side: i32| 20.0 + (side + 1) as f32 * (ER_W + gap_x);
+        let mut y_left = 20.0;
+        let mut y_right = 20.0;
+        self.tables.clear();
+        let mut center_h = 0.0;
+        for (name, cols) in tables {
+            let h = er_height(cols.len());
+            let (x, y) = if name == center {
+                center_h = h;
+                (col_x(0), 20.0)
+            } else if parents.contains(&name) && !children.contains(&name) {
+                let y = y_right;
+                y_right += h + gap_y;
+                (col_x(1), y)
+            } else {
+                let y = y_left;
+                y_left += h + gap_y;
+                (col_x(-1), y)
+            };
+            self.tables.push(ErTable { name, cols, pos: Pos2::new(x, y) });
+        }
+        // centre the middle table against the taller side
+        let side_h = (y_left.max(y_right) - gap_y - 20.0).max(0.0);
+        if let Some(t) = self.tables.iter_mut().find(|t| t.name == center) {
+            t.pos.y = 20.0 + ((side_h - center_h) / 2.0).max(0.0);
+        }
+        self.fks = fks;
+        self.loaded = true;
+        self.zoom = 1.0;
+        self.focus = Some(center.to_string());
+        self.fit_pending = true;
+    }
+
+    fn bounds(&self) -> Option<Rect> {
+        let mut it = self.tables.iter().map(|t| Rect::from_min_size(t.pos, Vec2::new(ER_W, er_height(t.cols.len()))));
+        let first = it.next()?;
+        Some(it.fold(first, |a, b| a.union(b)))
+    }
+
+    /// Zoom and pan so everything fits in `area` (never above 100 %).
+    pub fn fit(&mut self, area: Rect) {
+        let Some(b) = self.bounds() else { return };
+        let pad = 24.0;
+        let z = ((area.width() - 2.0 * pad) / b.width()).min((area.height() - 2.0 * pad) / b.height()).clamp(ER_ZOOM_MIN, 1.0);
+        self.zoom = z;
+        // centre: area.min + pan + pos*z
+        let content = b.size() * z;
+        self.pan = (area.size() - content) / 2.0 - b.min.to_vec2() * z;
+    }
+
+    /// Zoom by `factor` keeping `at` (a screen point inside `area`) still.
+    pub fn zoom_at(&mut self, factor: f32, at: Pos2, area: Rect) {
+        let old = self.zoom.max(ER_ZOOM_MIN);
+        let new = (old * factor).clamp(ER_ZOOM_MIN, ER_ZOOM_MAX);
+        let local = at - area.min - self.pan; // = pos * old
+        self.pan += local - local * (new / old);
+        self.zoom = new;
     }
 }
 
-pub fn er_diagram(ui: &mut egui::Ui, st: &mut ErState, p: &Palette) {
-    let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::drag());
+/// What the diagram asks for.
+#[derive(Default)]
+pub struct ErOut {
+    /// a table was double-clicked: open it
+    pub open: Option<String>,
+}
+
+pub fn er_diagram(ui: &mut egui::Ui, st: &mut ErState, p: &Palette) -> ErOut {
+    let mut out = ErOut::default();
+    if st.zoom <= 0.0 {
+        st.zoom = 1.0;
+    }
+    let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
     let area = resp.rect;
+    if st.fit_pending && area.width() > 50.0 {
+        st.fit(area);
+        st.fit_pending = false;
+    }
+    // Ctrl + wheel (or pinch) zooms around the pointer
+    if resp.hovered() {
+        let (zoom_delta, scroll, ctrl, pointer) = ui.input(|i| (i.zoom_delta(), i.raw_scroll_delta, i.modifiers.command, i.pointer.hover_pos()));
+        if let Some(at) = pointer {
+            if zoom_delta != 1.0 {
+                st.zoom_at(zoom_delta, at, area);
+            } else if ctrl && scroll.y != 0.0 {
+                st.zoom_at((scroll.y * 0.002).exp(), at, area);
+            } else if scroll != Vec2::ZERO {
+                st.pan += scroll;
+            }
+        }
+    }
+    let z = st.zoom;
     painter.rect_filled(area, 0.0, p.editor_bg);
     // dotted background
-    let step = 24.0;
-    let mut gx = area.left() + (st.pan.x % step);
+    let step = 24.0 * z.max(0.5);
+    let mut gx = area.left() + st.pan.x.rem_euclid(step);
     while gx < area.right() {
-        let mut gy = area.top() + (st.pan.y % step);
+        let mut gy = area.top() + st.pan.y.rem_euclid(step);
         while gy < area.bottom() {
             painter.circle_filled(Pos2::new(gx, gy), 1.0, p.border);
             gy += step;
@@ -1260,9 +1369,11 @@ pub fn er_diagram(ui: &mut egui::Ui, st: &mut ErState, p: &Palette) {
         st.pan += resp.drag_delta();
     }
     let origin = area.min.to_vec2() + st.pan;
-    let rect_of = |t: &ErTable| Rect::from_min_size(t.pos + origin, Vec2::new(ER_W, ER_HEAD + t.cols.len() as f32 * ER_ROW + 6.0));
+    let (w, head, row) = (ER_W * z, ER_HEAD * z, ER_ROW * z);
+    let rect_of = |t: &ErTable| Rect::from_min_size(Pos2::new(t.pos.x * z, t.pos.y * z) + origin, Vec2::new(w, er_height(t.cols.len()) * z));
     // relationships
     let colors = chart_colors(p);
+    let painter = painter.with_clip_rect(area);
     for (k, fk) in st.fks.iter().enumerate() {
         let a = st.tables.iter().find(|t| t.name == fk.from_table);
         let b = st.tables.iter().find(|t| t.name == fk.to_table);
@@ -1271,60 +1382,93 @@ pub fn er_diagram(ui: &mut egui::Ui, st: &mut ErState, p: &Palette) {
             let rb = rect_of(b);
             let ia = a.cols.iter().position(|c| c.name == fk.from_col).unwrap_or(0);
             let ib = b.cols.iter().position(|c| c.name == fk.to_col).unwrap_or(0);
-            let ya = ra.top() + ER_HEAD + ia as f32 * ER_ROW + ER_ROW / 2.0;
-            let yb = rb.top() + ER_HEAD + ib as f32 * ER_ROW + ER_ROW / 2.0;
-            let (pa, pb, da, db) = if (ra.center().x - rb.center().x).abs() < ER_W {
-                (Pos2::new(ra.left(), ya), Pos2::new(rb.left(), yb), -70.0, -70.0)
+            let ya = ra.top() + head + ia as f32 * row + row / 2.0;
+            let yb = rb.top() + head + ib as f32 * row + row / 2.0;
+            let bend = 60.0 * z;
+            let (pa, pb, da, db) = if (ra.center().x - rb.center().x).abs() < w {
+                (Pos2::new(ra.left(), ya), Pos2::new(rb.left(), yb), -bend - 10.0 * z, -bend - 10.0 * z)
             } else if ra.center().x <= rb.center().x {
-                (Pos2::new(ra.right(), ya), Pos2::new(rb.left(), yb), 60.0, -60.0)
+                (Pos2::new(ra.right(), ya), Pos2::new(rb.left(), yb), bend, -bend)
             } else {
-                (Pos2::new(ra.left(), ya), Pos2::new(rb.right(), yb), -60.0, 60.0)
+                (Pos2::new(ra.left(), ya), Pos2::new(rb.right(), yb), -bend, bend)
             };
+            let focus_edge = st.focus.as_deref().map(|f| f == fk.from_table || f == fk.to_table).unwrap_or(false);
             let col = colors[k % colors.len()];
             let curve = egui::epaint::CubicBezierShape::from_points_stroke(
                 [pa, pa + Vec2::new(da, 0.0), pb + Vec2::new(db, 0.0), pb],
                 false,
                 Color32::TRANSPARENT,
-                Stroke::new(1.8_f32, col),
+                Stroke::new(if focus_edge { 2.2 } else { 1.8 } * z.max(0.6), col),
             );
             painter.add(curve);
-            painter.circle_filled(pa, 3.5, col);
-            painter.circle_stroke(pb, 4.0, Stroke::new(1.8_f32, col));
+            painter.circle_filled(pa, 3.5 * z.max(0.6), col);
+            painter.circle_stroke(pb, 4.0 * z.max(0.6), Stroke::new(1.8 * z.max(0.6), col));
         }
     }
     // tables
     for (i, t) in st.tables.iter_mut().enumerate() {
-        let r = Rect::from_min_size(t.pos + origin, Vec2::new(ER_W, ER_HEAD + t.cols.len() as f32 * ER_ROW + 6.0));
+        let r = Rect::from_min_size(Pos2::new(t.pos.x * z, t.pos.y * z) + origin, Vec2::new(w, er_height(t.cols.len()) * z));
+        let head_r = Rect::from_min_size(r.min, Vec2::new(w, head));
+        let hit = ui.interact(head_r.intersect(area), ui.id().with(("er", i)), Sense::click_and_drag());
+        if hit.dragged() {
+            t.pos += hit.drag_delta() / z;
+        }
+        if hit.double_clicked() {
+            out.open = Some(t.name.clone());
+        }
+        if hit.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
         if !r.intersects(area) {
-            let head = ui.interact(Rect::from_min_size(r.min, Vec2::new(ER_W, ER_HEAD)), ui.id().with(("er", i)), Sense::drag());
-            if head.dragged() {
-                t.pos += head.drag_delta();
-            }
             continue;
         }
-        painter.rect_filled(r.translate(Vec2::new(0.0, 3.0)), 8.0, Color32::from_black_alpha(if p.dark { 90 } else { 25 }));
-        painter.rect_filled(r, 8.0, if p.dark { p.panel_alt } else { Color32::WHITE });
-        painter.rect_stroke(r, 8.0, Stroke::new(1.0_f32, p.border), egui::StrokeKind::Inside);
-        let head_r = Rect::from_min_size(r.min, Vec2::new(ER_W, ER_HEAD));
-        painter.rect_filled(head_r, egui::CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, p.primary.gamma_multiply(0.9));
-        painter.text(head_r.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, &t.name, FontId::proportional(13.5), Color32::from_rgb(20, 20, 20));
-        for (k, c) in t.cols.iter().enumerate() {
-            let y = r.top() + ER_HEAD + k as f32 * ER_ROW + ER_ROW / 2.0 + 2.0;
-            let name = if c.pk { format!("🔑 {}", c.name) } else { c.name.clone() };
-            painter.text(Pos2::new(r.left() + 10.0, y), egui::Align2::LEFT_CENTER, name, FontId::proportional(12.0), if c.pk { p.primary } else { p.text_dark });
-            painter.text(Pos2::new(r.right() - 10.0, y), egui::Align2::RIGHT_CENTER, c.data_type.to_lowercase(), FontId::monospace(10.5), p.text_light);
+        let focused = st.focus.as_deref() == Some(t.name.as_str());
+        let fk_cols: Vec<&str> = st.fks.iter().filter(|f| f.from_table == t.name).map(|f| f.from_col.as_str()).collect();
+        painter.rect_filled(r.translate(Vec2::new(0.0, 3.0 * z)), 8.0 * z, Color32::from_black_alpha(if p.dark { 90 } else { 25 }));
+        painter.rect_filled(r, 8.0 * z, if p.dark { p.panel_alt } else { Color32::WHITE });
+        painter.rect_stroke(r, 8.0 * z, Stroke::new(if focused { 2.0 } else { 1.0 }, if focused { p.secondary } else { p.border }), egui::StrokeKind::Inside);
+        let cr = (8.0 * z).round() as u8;
+        painter.rect_filled(head_r, egui::CornerRadius { nw: cr, ne: cr, sw: 0, se: 0 }, if focused { p.secondary } else { p.primary.gamma_multiply(0.9) });
+        if z >= 0.4 {
+            painter.text(head_r.left_center() + Vec2::new(10.0 * z, 0.0), egui::Align2::LEFT_CENTER, &t.name, FontId::proportional(13.5 * z), Color32::from_rgb(20, 20, 20));
+            for (k, c) in t.cols.iter().enumerate() {
+                let y = r.top() + head + k as f32 * row + row / 2.0 + 2.0 * z;
+                let is_fk = fk_cols.contains(&c.name.as_str());
+                let name = if c.pk { format!("🔑 {}", c.name) } else if is_fk { format!("🔗 {}", c.name) } else { c.name.clone() };
+                let color = if c.pk { p.primary } else if is_fk { p.secondary } else { p.text_dark };
+                painter.text(Pos2::new(r.left() + 10.0 * z, y), egui::Align2::LEFT_CENTER, name, FontId::proportional(12.0 * z), color);
+                painter.text(Pos2::new(r.right() - 10.0 * z, y), egui::Align2::RIGHT_CENTER, c.data_type.to_lowercase(), FontId::monospace(10.5 * z), p.text_light);
+            }
         }
-        let head = ui.interact(head_r, ui.id().with(("er", i)), Sense::drag());
-        if head.dragged() {
-            t.pos += head.drag_delta();
-        }
-        if head.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        if hit.hovered() {
+            painter.rect_stroke(r, 8.0 * z, Stroke::new(1.5, p.primary), egui::StrokeKind::Inside);
         }
     }
     if st.tables.is_empty() {
         painter.text(area.center(), egui::Align2::CENTER_CENTER, if st.loaded { "No tables found" } else { "Loading schema…" }, FontId::proportional(16.0), p.text_light);
     }
+    // zoom controls, top left (side panels and pop-ups sit on the right)
+    let bar = Rect::from_min_size(area.left_top() + Vec2::new(10.0, 10.0), Vec2::new(204.0, 30.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bar).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    egui::Frame::new().fill(p.panel_alt).stroke(Stroke::new(1.0, p.border)).corner_radius(8).inner_margin(egui::Margin::symmetric(4, 2)).show(&mut child, |ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if ui.small_button("−").on_hover_text("Zoom out  (Ctrl + wheel)").clicked() {
+            st.zoom_at(1.0 / ER_ZOOM_STEP, area.center(), area);
+        }
+        if ui.small_button(format!("{:.0}%", st.zoom * 100.0)).on_hover_text("Back to 100 %").clicked() {
+            st.zoom_at(1.0 / st.zoom, area.center(), area);
+        }
+        if ui.small_button("+").on_hover_text("Zoom in  (Ctrl + wheel)").clicked() {
+            st.zoom_at(ER_ZOOM_STEP, area.center(), area);
+        }
+        if ui.small_button("⛶ Fit").on_hover_text("Show every table").clicked() {
+            st.fit(area);
+        }
+    });
+    if !st.tables.is_empty() && z >= 0.4 {
+        painter.text(area.left_bottom() + Vec2::new(10.0, -10.0), egui::Align2::LEFT_BOTTOM, "drag to move · Ctrl+wheel to zoom · double-click a table to open it", FontId::proportional(11.0), p.text_lighter);
+    }
+    out
 }
 
 /// Small drawn icon for tables/views in the sidebar.

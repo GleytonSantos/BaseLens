@@ -771,7 +771,7 @@ impl App {
                     TabKind::Er(er) => {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("⛓  Relationships").strong().size(16.0).color(p.text_dark));
-                            ui.label(RichText::new("Drag tables by their title; drag the background to move around.").color(p.text_light));
+                            ui.label(RichText::new("Drag tables by their title, Ctrl+wheel to zoom, double-click a table to open it.").color(p.text_light));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button("⟳ Reload").clicked() {
                                     er.loaded = false;
@@ -780,7 +780,9 @@ impl App {
                             });
                         });
                         ui.add_space(6.0);
-                        widgets::er_diagram(ui, er, &p);
+                        if let Some(name) = widgets::er_diagram(ui, er, &p).open {
+                            actions.push(Action::OpenTable(name));
+                        }
                     }
                 }
             });
@@ -823,6 +825,19 @@ impl App {
                 });
                 if let (Some(req), Some(o)) = (req, self.conn(sid)) {
                     let _ = o.handle.send(req);
+                }
+            }
+            Action::OpenTable(name) => {
+                let schema = self.tabs.iter().find(|t| t.id == tid).and_then(|t| match &t.kind {
+                    TabKind::Table(tt) => tt.schema.clone(),
+                    _ => None,
+                });
+                let found = self.conn(sid).and_then(|o| {
+                    o.tables.iter().find(|t| t.name == name && t.schema == schema).or_else(|| o.tables.iter().find(|t| t.name == name)).cloned()
+                });
+                if let Some(t) = found {
+                    self.active_conn = Some(sid);
+                    self.open_table(sid, &t);
                 }
             }
             Action::Explain(analyze) => self.explain_query_tab(tid, analyze),
