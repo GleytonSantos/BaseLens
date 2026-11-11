@@ -677,3 +677,23 @@ fn sqlite_complete_matches_sqlite() {
     // PostgreSQL triggers (no BEGIN body) still end at their semicolon
     assert_eq!(split_statements("CREATE TRIGGER t BEFORE INSERT ON o FOR EACH ROW EXECUTE FUNCTION f(); SELECT 1").len(), 2);
 }
+
+#[test]
+    fn er_zoom_follows_the_original_page_zoom() {
+        use crate::widgets::*;
+        assert!((zoom_level_to_factor(1.0) - 1.2).abs() < 1e-12);
+        assert!((zoom_factor_to_level(1.44) - 2.0).abs() < 1e-9);
+        assert!((ER_ZOOM_LN_RATIO - 1.2f64.ln()).abs() < 1e-15);
+        assert!(zoom_values_equal(1.0, 1.0009) && !zoom_values_equal(1.0, 1.002));
+        assert_eq!(zoom_next_preset(1.0, true), 1.1);
+        assert_eq!(zoom_next_preset(1.0, false), 0.9);
+        assert_eq!(zoom_next_preset(1.05, true), 1.1);
+        assert_eq!(zoom_next_preset(1.0005, true), 1.1); // equal within 0.001 counts as 100 %
+        assert_eq!(zoom_next_preset(5.0, true), 5.0);
+        assert_eq!(zoom_next_preset(0.25, false), 0.25);
+        assert_eq!(ER_ZOOM_PRESETS[0] as f32, ER_ZOOM_MIN);
+        assert_eq!(*ER_ZOOM_PRESETS.last().unwrap() as f32, ER_ZOOM_MAX);
+        // the original turns the ends into whole percents (0x5b3e048)
+        assert_eq!(((ER_ZOOM_MIN as f64) * 100.0) as i32, 25);
+        assert_eq!(((ER_ZOOM_MAX as f64) * 100.0) as i32, 500);
+}

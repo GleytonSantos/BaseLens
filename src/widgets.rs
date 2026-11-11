@@ -1223,9 +1223,42 @@ const ER_W: f32 = 210.0;
 const ER_HEAD: f32 = 28.0;
 const ER_ROW: f32 = 19.0;
 /// Zoom limits and the step of the + / − buttons.
+/// The original's zoom (Chromium page zoom), read from its binary:
+/// preset factors at 0x1e33d70 (17 doubles), smallest 0x1e33df8, largest
+/// 0x1e33e00 (checked against the table's ends at 0xa9f6e20).
+pub const ER_ZOOM_PRESETS: [f64; 17] = [0.25, 1.0 / 3.0, 0.5, 2.0 / 3.0, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0];
 pub const ER_ZOOM_MIN: f32 = 0.25;
-pub const ER_ZOOM_MAX: f32 = 2.5;
-pub const ER_ZOOM_STEP: f32 = 1.2;
+pub const ER_ZOOM_MAX: f32 = 5.0;
+/// factor = 1.2 ^ level (0x3f4dae0: pow(1.2, level))
+pub const ER_ZOOM_RATIO: f64 = 1.2;
+/// level = ln(factor) / ln(1.2) (0x3f4db00 divides by this constant)
+pub const ER_ZOOM_LN_RATIO: f64 = 0.1823215567939546;
+/// two zooms are the same when they differ by at most this (0x3f4db20)
+pub const ER_ZOOM_EPSILON: f64 = 0.001;
+/// Ctrl + wheel: zoom levels per scrolled point (BaseLens design: one
+/// 50-point notch = half a level)
+pub const ER_WHEEL_LEVELS_PER_POINT: f64 = 0.01;
+
+pub fn zoom_level_to_factor(level: f64) -> f64 {
+    ER_ZOOM_RATIO.powf(level)
+}
+
+pub fn zoom_factor_to_level(factor: f64) -> f64 {
+    factor.ln() / ER_ZOOM_LN_RATIO
+}
+
+pub fn zoom_values_equal(a: f64, b: f64) -> bool {
+    (a - b).abs() <= ER_ZOOM_EPSILON
+}
+
+/// The next preset factor above (`up`) or below the current one; stays put at the ends.
+pub fn zoom_next_preset(current: f64, up: bool) -> f64 {
+    if up {
+        ER_ZOOM_PRESETS.iter().copied().find(|&f| f > current && !zoom_values_equal(f, current)).unwrap_or(current)
+    } else {
+        ER_ZOOM_PRESETS.iter().rev().copied().find(|&f| f < current && !zoom_values_equal(f, current)).unwrap_or(current)
+    }
+}
 
 fn er_height(cols: usize) -> f32 {
     ER_HEAD + cols as f32 * ER_ROW + 6.0
@@ -1346,7 +1379,10 @@ pub fn er_diagram(ui: &mut egui::Ui, st: &mut ErState, p: &Palette) -> ErOut {
             if zoom_delta != 1.0 {
                 st.zoom_at(zoom_delta, at, area);
             } else if ctrl && scroll.y != 0.0 {
-                st.zoom_at((scroll.y * 0.002).exp(), at, area);
+                // move by zoom levels, as the original's page zoom does
+                let level = zoom_factor_to_level(st.zoom as f64) + scroll.y as f64 * ER_WHEEL_LEVELS_PER_POINT;
+                let target = zoom_level_to_factor(level) as f32;
+                st.zoom_at(target / st.zoom, at, area);
             } else if scroll != Vec2::ZERO {
                 st.pan += scroll;
             }
@@ -1453,13 +1489,15 @@ pub fn er_diagram(ui: &mut egui::Ui, st: &mut ErState, p: &Palette) -> ErOut {
     egui::Frame::new().fill(p.panel_alt).stroke(Stroke::new(1.0, p.border)).corner_radius(8).inner_margin(egui::Margin::symmetric(4, 2)).show(&mut child, |ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         if ui.small_button("−").on_hover_text("Zoom out  (Ctrl + wheel)").clicked() {
-            st.zoom_at(1.0 / ER_ZOOM_STEP, area.center(), area);
+            let target = zoom_next_preset(st.zoom as f64, false) as f32;
+            st.zoom_at(target / st.zoom, area.center(), area);
         }
         if ui.small_button(format!("{:.0}%", st.zoom * 100.0)).on_hover_text("Back to 100 %").clicked() {
             st.zoom_at(1.0 / st.zoom, area.center(), area);
         }
         if ui.small_button("+").on_hover_text("Zoom in  (Ctrl + wheel)").clicked() {
-            st.zoom_at(ER_ZOOM_STEP, area.center(), area);
+            let target = zoom_next_preset(st.zoom as f64, true) as f32;
+            st.zoom_at(target / st.zoom, area.center(), area);
         }
         if ui.small_button("⛶ Fit").on_hover_text("Show every table").clicked() {
             st.fit(area);
