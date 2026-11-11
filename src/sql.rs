@@ -134,6 +134,8 @@ pub struct SqlError {
     pub line: usize,
     pub col: usize,
     pub message: String,
+    /// bytes of the token the error names (0 = unknown: mark the word there)
+    pub len: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -183,6 +185,16 @@ fn position_in(msg: &str) -> (usize, usize) {
 /// from name resolution, and isn't a syntax error.
 pub const SQLITE_SYNTAX_MESSAGES: [&str; 3] = ["unrecognized token: \"", "incomplete input", "near \""];
 
+/// The token SQLite's message names. Its `%T` conversion (inside
+/// sqlite3_str_vappendf 0x68468a0, at 0x6848073) copies exactly the token's
+/// own n bytes, so the text between the quotes is the whole token.
+pub fn sqlite_error_token(msg: &str) -> Option<&str> {
+    msg.strip_prefix("near \"")
+        .and_then(|r| r.strip_suffix("\": syntax error"))
+        .or_else(|| msg.strip_prefix("unrecognized token: \"").and_then(|r| r.strip_suffix('"')))
+        .filter(|t| !t.is_empty())
+}
+
 fn is_sqlite_syntax_error(msg: &str) -> bool {
     SQLITE_SYNTAX_MESSAGES.iter().any(|p| msg.starts_with(p)) && (!msg.starts_with("near \"") || msg.ends_with(": syntax error"))
 }
@@ -224,7 +236,10 @@ fn validate_sqlite(sql: &str) -> Result<(), SqlError> {
             None => start,
         };
         let (line, col) = line_col(sql, at);
-        return Err(SqlError { line, col, message: msg });
+        // the offset is where that token starts (0x68497b8: z - pParse->zTail,
+        // the statement's own text), so it must be there
+        let len = sqlite_error_token(&msg).filter(|t| sql.get(at..).map(|s| s.starts_with(*t)).unwrap_or(false)).map(str::len).unwrap_or(0);
+        return Err(SqlError { line, col, message: msg, len });
     }
     Ok(())
 }
@@ -249,9 +264,19 @@ pub fn validate(sql: &str, kind: DbKind) -> Result<(), SqlError> {
                 .next()
                 .unwrap_or(&raw)
                 .to_string();
-            Err(SqlError { line, col, message })
+            Err(SqlError { line, col, message, len: 0 })
         }
     }
+}
+
+/// Byte range of a syntax error: the exact token when the parser named it,
+/// else the word at its position.
+pub fn error_span(text: &str, e: &SqlError) -> Option<Range<usize>> {
+    let r = error_range(text, e.line, e.col)?;
+    if e.len > 0 && r.start + e.len <= text.len() && text.is_char_boundary(r.start + e.len) {
+        return Some(r.start..r.start + e.len);
+    }
+    Some(r)
 }
 
 /// Byte range of the word at (line, col) in `text`, to underline it.

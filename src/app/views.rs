@@ -754,7 +754,7 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
     let mut mark_info: Vec<MarkInfo> = Vec::new();
     if q.edited.is_none() {
         if let Some(e) = &q.syntax {
-            if let Some(r) = crate::sql::error_range(&q.sql, e.line, e.col) {
+            if let Some(r) = crate::sql::error_span(&q.sql, e) {
                 marks.push((r, p.danger));
                 mark_info.push(MarkInfo { title: format!("Syntax ({})", kind.label()), desc: e.message.clone(), color: p.danger, hunk: None });
             }

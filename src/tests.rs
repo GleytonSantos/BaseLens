@@ -737,3 +737,20 @@ fn live_lint_offers_a_fix_per_place() {
     // clean SQL: nothing to say
     assert!(crate::sql::live_lint("SELECT id FROM products", DbKind::Sqlite).unwrap().findings.is_empty());
 }
+
+#[test]
+fn sqlite_errors_mark_the_whole_token() {
+    use crate::sql::*;
+    assert_eq!(sqlite_error_token("near \"frm\": syntax error"), Some("frm"));
+    assert_eq!(sqlite_error_token("unrecognized token: \"'abc\""), Some("'abc"));
+    assert_eq!(sqlite_error_token("incomplete input"), None);
+    for (sql, token) in [("SELECT 1 >= >= 2", ">="), ("SELECT * frm t", "frm"), ("SELECT 'abc", "'abc"), ("SELECT 1 AS \"a b\" \"c d\"", "\"c d\"")] {
+        let e = validate(sql, DbKind::Sqlite).unwrap_err();
+        let r = error_span(sql, &e).unwrap();
+        assert_eq!(&sql[r], token, "{sql}: {e:?}");
+    }
+    // the offset counts from the start of the statement, in a script too
+    let sql = "SELECT 1;\nSELECT * frm t;";
+    let e = validate(sql, DbKind::Sqlite).unwrap_err();
+    assert_eq!((e.line, &sql[error_span(sql, &e).unwrap()]), (2, "frm"));
+}
