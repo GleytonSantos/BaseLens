@@ -1084,6 +1084,24 @@
       "group": "er",
       "value": 0.01,
       "source": "BaseLens design (widgets.rs ER_WHEEL_LEVELS_PER_POINT)"
+    },
+    {
+      "name": "Live lint largest SQL",
+      "group": "editor",
+      "value": 20000,
+      "source": "BaseLens design (sql.rs LINT_LIVE_MAX_BYTES)"
+    },
+    {
+      "name": "Fix split largest line count",
+      "group": "editor",
+      "value": 2000,
+      "source": "BaseLens design (sql.rs FIX_DIFF_MAX_LINES)"
+    },
+    {
+      "name": "Lint list height under the editor",
+      "group": "editor",
+      "value": 150,
+      "source": "BaseLens design (views.rs LINT_INLINE_MAX_HEIGHT)"
     }
   ]
 }
