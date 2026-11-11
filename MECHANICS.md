@@ -510,3 +510,16 @@ Used in the build (`widgets.rs`): `ER_ZOOM_PRESETS`, `ER_ZOOM_MIN` 0.25 / `ER_ZO
 - **Highlighted**: every finding underlines the word (or character) at its line/column — red for parse errors and the syntax check, amber for findings sqruff can fix, blue for the rest (`widgets::sql_job_marked` now takes several coloured marks). Resting the pointer on a mark shows the rule, the message and the fix as removed/added lines.
 - **Fix structure inline**: sqruff's fix is computed once for the whole text and cut into places with a line diff (`sql::fix_hunks`, longest common subsequence of lines, up to `FIX_DIFF_MAX_LINES` = 2 000 lines; lines changed one for one become one fix per line). Under the editor a list (at most 150 px high) shows each finding (line:col → jumps there, rule code, message) with its fix as `− old` / `+ new` and **Apply fix**; findings sharing a fix point to the one above; **✓ Fix all** applies the whole fix. **Ctrl+.** applies the fix of the caret's line. A fix is applied only if its lines are still where they were (`sql::apply_hunk`). The status line shows "⚑ N lint · K fixable" (click to show/hide the list).
 - Tests `fix_hunks_split_a_fix_into_places`, `neighbouring_line_fixes_stay_separate`, `live_lint_offers_a_fix_per_place`; robot step 23 types SQL with a lowercase keyword, waits for the automatic lint and applies the inline fix; screenshot scene `lint`.
+
+
+## Round 40 — decompiled: what SQLite marks as the error
+
+The original's SQLite reports where a syntax error is through `db->errByteOffset` (field +0x54 of the connection). Read in the binary:
+
+- **sqlite3ErrorMsg, 0x6856a60** (called with `near "%T": syntax error` at 0x685b689): sets `errByteOffset = -2` ("waiting for a token"), formats the message, and if it is still ≤ −2 afterwards sets it to −1 (no position). Then `nErr++` (+0x38) and `rc = 1` (SQLITE_ERROR, +0x18).
+- **The `%T` conversion inside sqlite3_str_vappendf, 0x68468a0** (code at 0x6848073–0x68480ad): the argument is a Token `{z, n}` (n at +8); exactly `n` bytes of `z` are appended — so the quoted text in `near "…"` / `unrecognized token: "…"` is the whole token.
+- Right after (0x68480c1 → 0x68497a4): when `errByteOffset == -2`, it takes `pParse = db->pParse` (+0x158) and `zText = pParse->zTail` (+0x158 of Parse, the text of the statement being prepared); if `zText <= z < zText + strlen(zText)`, `errByteOffset = z − zText` (0x68497b8–0x68497bb).
+
+So the error position is the start of the named token, counted from the start of *that statement*, and the token's length is the length of the quoted text.
+
+Used in the build: BaseLens already added the statement's start to the offset (`validate_sqlite`). New: `sql::sqlite_error_token` takes the token from the message and `SqlError.len` keeps its length when the text at the offset really starts with it; `sql::error_span` underlines exactly that token in the editor (e.g. all of `>=`, `'abc`, `"c d"`, where it used to mark one character or a word). Other dialects (sqlparser) keep the word at the position. Test `sqlite_errors_mark_the_whole_token`.

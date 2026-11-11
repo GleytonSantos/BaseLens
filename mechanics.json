@@ -1102,6 +1102,24 @@
       "group": "editor",
       "value": 150,
       "source": "BaseLens design (views.rs LINT_INLINE_MAX_HEIGHT)"
+    },
+    {
+      "name": "SQLite error offset while formatting",
+      "group": "editor",
+      "value": -2,
+      "source": "sqlite3ErrorMsg 0x6856a60: db->errByteOffset (+0x54) = -2 before formatting"
+    },
+    {
+      "name": "SQLite error offset when no token was named",
+      "group": "editor",
+      "value": -1,
+      "source": "sqlite3ErrorMsg 0x6856a60: errByteOffset <= -2 becomes -1"
+    },
+    {
+      "name": "SQLite error token bytes marked",
+      "group": "editor",
+      "value": "the token's n bytes",
+      "source": "sqlite3_str_vappendf 0x68468a0, %T at 0x6848073 (memcpy of Token.z, Token.n)"
     }
   ]
 }
