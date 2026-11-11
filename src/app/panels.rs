@@ -751,6 +751,7 @@ impl App {
             _ => HashMap::new(),
         };
         let tx = self.conn(sid).map(|o| (o.manual_tx, o.tx_open)).unwrap_or((false, false));
+        let kind = self.conn(sid).map(|o| o.cfg.kind).unwrap_or(crate::db::DbKind::Sqlite);
         let tab = &mut self.tabs[idx];
         egui::Frame::new()
             .fill(p.panel_alt)
@@ -764,7 +765,7 @@ impl App {
                     ui.vertical_centered(|ui| ui.label(RichText::new(msg).color(p.text_light).size(15.0)));
                 }
                 match &mut tab.kind {
-                    TabKind::Query(q) => query_view(ui, q, id, &p, &mut actions, &schema, tx),
+                    TabKind::Query(q) => query_view(ui, q, id, &p, &mut actions, &schema, tx, kind),
                     TabKind::Table(tt) => table_view(ui, tt, id, &p, &mut actions, page_size, read_only, &table_vals),
                     TabKind::Ai(a) => ai_view(ui, a, id, &p, &mut actions, &ai_settings),
                     TabKind::Er(er) => {

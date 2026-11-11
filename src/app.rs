@@ -162,6 +162,14 @@ struct QueryTab {
     stop_asked: Option<StopReason>,
     /// visual EXPLAIN shown instead of the results
     plan: Option<Result<crate::plan::PlanNode, String>>,
+    /// offline syntax check: when the text last changed, the hash checked,
+    /// and the error found (None = looks fine)
+    edited: Option<Instant>,
+    checked: u64,
+    syntax: Option<crate::sql::SqlError>,
+    /// sqruff lint shown instead of the results, and one being computed
+    lint: Option<Result<Vec<crate::sql::Violation>, String>>,
+    lint_rx: Option<std::sync::mpsc::Receiver<Result<Vec<crate::sql::Violation>, String>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -188,6 +196,7 @@ enum EditorOp {
     Format,
     Comment,
     Complete,
+    Lint,
 }
 
 #[derive(Default)]
@@ -349,6 +358,7 @@ enum Cmd {
     RunQuery,
     RunCurrent,
     FormatSql,
+    LintSql,
     ToggleComment,
     Autocomplete,
     SaveChanges,
@@ -377,7 +387,8 @@ enum Cmd {
 }
 
 impl Cmd {
-    const ALL: [Cmd; 32] = [
+    const ALL: [Cmd; 33] = [
+        Cmd::LintSql,
         Cmd::Ask,
         Cmd::Argon2,
         Cmd::NewQuery,
@@ -420,6 +431,7 @@ impl Cmd {
             Cmd::RunQuery => "Run query (all or selection)",
             Cmd::RunCurrent => "Run statement under cursor",
             Cmd::FormatSql => "Format SQL",
+            Cmd::LintSql => "Lint SQL (sqruff)",
             Cmd::ToggleComment => "Comment / uncomment line",
             Cmd::Autocomplete => "Show suggestions",
             Cmd::SaveChanges => "Save table changes",
@@ -470,6 +482,7 @@ impl Cmd {
             Cmd::RunQuery => "Ctrl+Enter · F5",
             Cmd::RunCurrent => "Ctrl+Shift+Enter",
             Cmd::FormatSql => "Ctrl+Shift+F",
+            Cmd::LintSql => "Ctrl+Shift+I",
             Cmd::ToggleComment => "Ctrl+/",
             Cmd::Autocomplete => "Ctrl+Space",
             Cmd::SaveChanges => "Ctrl+S",
@@ -1825,6 +1838,7 @@ impl App {
             (cs, Key::Enter, Cmd::RunCurrent),
             (Modifiers::SHIFT, Key::F5, Cmd::RunCurrent),
             (cs, Key::F, Cmd::FormatSql),
+            (cs, Key::I, Cmd::LintSql),
             (cs, Key::T, Cmd::ReopenTab),
             (cs, Key::N, Cmd::NewConnection),
             (cs, Key::E, Cmd::NewEr),
@@ -1956,9 +1970,10 @@ impl App {
                     }
                 }
             }
-            Cmd::FormatSql | Cmd::ToggleComment | Cmd::Autocomplete => {
+            Cmd::FormatSql | Cmd::ToggleComment | Cmd::Autocomplete | Cmd::LintSql => {
                 let op = match c {
                     Cmd::FormatSql => EditorOp::Format,
+                    Cmd::LintSql => EditorOp::Lint,
                     Cmd::ToggleComment => EditorOp::Comment,
                     _ => EditorOp::Complete,
                 };

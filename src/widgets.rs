@@ -179,6 +179,32 @@ pub fn sql_tokens(text: &str) -> Vec<(std::ops::Range<usize>, SqlTok)> {
     out
 }
 
+/// Like `sql_job`, with `mark` (a byte range) underlined as an error.
+pub fn sql_job_marked(text: &str, p: &Palette, font: FontId, wrap: f32, mark: Option<std::ops::Range<usize>>) -> LayoutJob {
+    let Some(m) = mark.filter(|m| m.start < m.end && m.end <= text.len()) else {
+        return sql_job(text, p, font, wrap);
+    };
+    let base = sql_job(text, p, font, wrap);
+    let mut job = LayoutJob::default();
+    job.wrap = base.wrap.clone();
+    for sec in &base.sections {
+        let r = sec.byte_range.clone();
+        let cuts = [r.start, m.start.clamp(r.start, r.end), m.end.clamp(r.start, r.end), r.end];
+        for w in cuts.windows(2) {
+            if w[0] >= w[1] {
+                continue;
+            }
+            let mut f = sec.format.clone();
+            if w[0] >= m.start && w[1] <= m.end {
+                f.underline = Stroke::new(2.0, p.danger);
+                f.background = p.danger.gamma_multiply(0.15);
+            }
+            job.append(&text[w[0]..w[1]], 0.0, f);
+        }
+    }
+    job
+}
+
 pub fn sql_job(text: &str, p: &Palette, font: FontId, wrap: f32) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.wrap.max_width = wrap;

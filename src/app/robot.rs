@@ -496,6 +496,29 @@ impl App {
                     }
                 }
             }
+            // 21: a typo is flagged by the offline syntax check after a pause
+            21 => {
+                if r.waited == 1 {
+                    if let Some(s) = r.sid {
+                        self.new_query_tab(s, String::new());
+                    }
+                } else if r.waited == 4 {
+                    if let Some(rect) = ctx_rect(self, "robot_editor_rect") {
+                        r.click(rect.left_top() + Vec2::new(30.0, 10.0));
+                    }
+                    for ch in "select * frm orders".chars() {
+                        r.queue.push_back(vec![Event::Text(ch.to_string())]);
+                    }
+                    r.key(Key::Escape, Modifiers::NONE);
+                } else if r.waited > 6 {
+                    let (pending, err) = self.active_query().map(|q| (q.edited.is_some(), q.syntax.clone())).unwrap_or((false, None));
+                    if !pending || r.waited > 120 {
+                        let ok = err.as_ref().map(|e| e.line == 1 && e.col > 0).unwrap_or(false);
+                        r.check(ok, &format!("a typo is flagged by the offline syntax check ({:?})", err.map(|e| e.message)));
+                        next(r);
+                    }
+                }
+            }
             _ => r.done = true,
         }
     }

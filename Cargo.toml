@@ -32,6 +32,15 @@ rust_xlsxwriter = { version = "0.80", default-features = false }
 scrypt = { version = "0.11", default-features = false, features = ["simple", "std"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.15"
+# offline SQL syntax check per dialect (small, pure Rust)
+sqlparser = "0.64"
+# SQL linter and fixer (pure Rust but large: about +6.7 MB to the download;
+# build without it with `--no-default-features`)
+sqruff-lib = { version = "0.44", optional = true }
+
+[features]
+default = ["lint"]
+lint = ["dep:sqruff-lib"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

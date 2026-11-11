@@ -71,6 +71,102 @@ fn result_body(
     }
 }
 
+fn text_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish() | 1
+}
+
+/// Char index of (line, col), both 1-based.
+fn char_index(text: &str, line: usize, col: usize) -> usize {
+    let mut idx = 0;
+    for (i, l) in text.split('\n').enumerate() {
+        if i + 1 == line {
+            return idx + col.saturating_sub(1).min(l.chars().count());
+        }
+        idx += l.chars().count() + 1;
+    }
+    text.chars().count()
+}
+
+/// Runs sqruff on another thread (it can take a moment on long scripts).
+fn start_lint(q: &mut QueryTab, kind: crate::db::DbKind) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sql = q.sql.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(crate::sql::lint(&sql, kind));
+    });
+    q.lint = None;
+    q.lint_rx = Some(rx);
+}
+
+fn lint_panel(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palette, kind: crate::db::DbKind, ed_id: egui::Id) {
+    let mut close = false;
+    let mut fix_all = false;
+    let mut go_to: Option<(usize, usize)> = None;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("✓ Lint (sqruff)").strong().color(p.text_dark));
+        if q.lint_rx.is_some() {
+            ui.spinner();
+        }
+        let fixable = q.lint.as_ref().and_then(|r| r.as_ref().ok()).map(|v| v.iter().filter(|x| x.fixable).count()).unwrap_or(0);
+        if fixable > 0 && ui.add(primary_button(p, &format!("Fix {fixable} automatically"))).on_hover_text("Applies sqruff's fixes to the editor text (undo with Ctrl+Z)").clicked() {
+            fix_all = true;
+        }
+        if ui.add(ghost_button(p, "↻ Again")).clicked() {
+            start_lint(q, kind);
+        }
+        if ui.add(ghost_button(p, "✕ Back to results")).clicked() {
+            close = true;
+        }
+    });
+    match &q.lint {
+        Some(Ok(v)) if v.is_empty() => {
+            ui.label(RichText::new("No findings. 🎉").color(p.success));
+        }
+        Some(Ok(v)) => {
+            egui::ScrollArea::vertical().id_salt(("lint", id)).auto_shrink([false, false]).show(ui, |ui| {
+                egui::Grid::new(("lintg", id)).striped(true).num_columns(4).show(ui, |ui| {
+                    for x in v {
+                        let col = if x.code == "PRS" { p.danger } else if x.fixable { p.warning } else { p.text_light };
+                        if ui.link(RichText::new(format!("{}:{}", x.line, x.col)).monospace().small()).on_hover_text("Go there").clicked() {
+                            go_to = Some((x.line, x.col));
+                        }
+                        ui.label(RichText::new(&x.code).monospace().small().color(col)).on_hover_text(&x.name);
+                        ui.label(RichText::new(&x.desc).small());
+                        ui.label(RichText::new(if x.fixable { "fixable" } else { "" }).small().color(p.text_lighter));
+                        ui.end_row();
+                    }
+                });
+            });
+        }
+        Some(Err(e)) => {
+            ui.label(RichText::new(format!("⚠  {e}")).color(p.danger));
+        }
+        None => {}
+    }
+    if fix_all {
+        match crate::sql::fix(&q.sql, kind) {
+            Ok(fixed) => {
+                q.sql = fixed;
+                q.edited = Some(Instant::now());
+                start_lint(q, kind);
+            }
+            Err(e) => q.lint = Some(Err(e)),
+        }
+    }
+    if let Some((l, c)) = go_to {
+        let pos = char_index(&q.sql, l, c);
+        set_cursor(ui.ctx(), ed_id, pos);
+        ui.ctx().memory_mut(|m| m.request_focus(ed_id));
+    }
+    if close {
+        q.lint = None;
+        q.lint_rx = None;
+    }
+}
+
 /// Every export format, with its shortcut where it has one.
 fn export_menu(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     for f in crate::export::Format::ALL {
@@ -131,7 +227,8 @@ fn kind_color(p: &Palette, k: SugKind) -> Color32 {
     }
 }
 
-pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palette, actions: &mut Vec<Action>, schema: &SchemaInfo, tx: (bool, bool)) {
+#[allow(clippy::too_many_arguments)]
+pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palette, actions: &mut Vec<Action>, schema: &SchemaInfo, tx: (bool, bool), kind: crate::db::DbKind) {
     let ed_id = egui::Id::new(("sqled", id));
     let ctx = ui.ctx().clone();
     ui.horizontal(|ui| {
@@ -157,6 +254,9 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
             if ui.add_enabled(open, ghost_button(p, "↶ Rollback")).clicked() {
                 actions.push(Action::EndTx(false));
             }
+        }
+        if ui.add(ghost_button(p, "✓ Lint")).on_hover_text("Check style and common mistakes with sqruff  (Ctrl+Shift+I)").clicked() {
+            q.editor_op = Some(EditorOp::Lint);
         }
         ui.menu_button("🧭 Explain", |ui| {
             if ui.button("Show the plan").on_hover_text("How the database would run the statement under the cursor (or the selection). Nothing is run.").clicked() {
@@ -202,13 +302,13 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
                 let chars: Vec<char> = q.sql.chars().collect();
                 if a != b && b <= chars.len() {
                     let sel: String = chars[a..b].iter().collect();
-                    let f = assist::format_sql(&sel);
+                    let f = crate::sql::format(&sel, kind);
                     let mut new: String = chars[..a].iter().collect();
                     new.push_str(f.trim_end());
                     new.extend(chars[b..].iter());
                     q.sql = new;
                 } else {
-                    q.sql = assist::format_sql(&q.sql);
+                    q.sql = crate::sql::format(&q.sql, kind);
                 }
                 set_cursor(&ctx, ed_id, q.sql.chars().count());
             }
@@ -217,6 +317,7 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
                 q.sql = t;
                 set_cursor(&ctx, ed_id, cur);
             }
+            EditorOp::Lint => start_lint(q, kind),
             EditorOp::Complete => {
                 set_cursor(&ctx, ed_id, q.cursor.0);
                 q.ac.open = true;
@@ -261,8 +362,10 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
     let scale = egui::TextStyle::Body.resolve(ui.style()).size / 13.5;
     let font = egui::FontId::monospace(EDITOR_FONT_SIZE * scale);
     let pal = *p;
+    // underline the offline syntax error (only while the text is the one checked)
+    let mark = if q.edited.is_none() { q.syntax.as_ref().and_then(|e| crate::sql::error_range(&q.sql, e.line, e.col)) } else { None };
     let mut layouter = move |ui: &egui::Ui, text: &str, wrap: f32| {
-        let job = widgets::sql_job(text, &pal, font.clone(), wrap);
+        let job = widgets::sql_job_marked(text, &pal, font.clone(), wrap, mark.clone());
         ui.fonts(|f| f.layout_job(job))
     };
     let mut caret_pos: Option<egui::Pos2> = None;
@@ -287,6 +390,7 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
                 caret_pos = Some(out.galley_pos + r.left_bottom().to_vec2() + Vec2::new(0.0, 4.0));
             }
             if out.response.changed() {
+                q.edited = Some(Instant::now());
                 // open while typing a word or right after a dot
                 let chars: Vec<char> = q.sql.chars().collect();
                 let c = q.cursor.0.min(chars.len());
@@ -378,8 +482,36 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
             }
         }
     }
+    // offline syntax check, a moment after the last key
+    if let Some(t) = q.edited {
+        if t.elapsed().as_millis() as u64 >= crate::sql::VALIDATE_DEBOUNCE_MS {
+            q.edited = None;
+            let h = text_hash(&q.sql);
+            if h != q.checked {
+                q.checked = h;
+                q.syntax = if q.sql.len() <= crate::sql::VALIDATE_MAX_BYTES { crate::sql::validate(&q.sql, kind).err() } else { None };
+            }
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(crate::sql::VALIDATE_DEBOUNCE_MS));
+        }
+    } else if q.checked == 0 && !q.sql.trim().is_empty() {
+        // a tab opened with text in it
+        q.edited = Some(Instant::now() - std::time::Duration::from_millis(crate::sql::VALIDATE_DEBOUNCE_MS));
+        ctx.request_repaint();
+    }
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Ctrl+Space suggest · Ctrl+Shift+F format · Ctrl+/ comment · Ctrl+Enter run").small().color(p.text_lighter));
+        match (&q.syntax, q.edited.is_some()) {
+            (Some(e), false) => {
+                let at = if e.line > 0 { format!("line {}, col {}: ", e.line, e.col) } else { String::new() };
+                ui.label(RichText::new(format!("⚠ {at}{}", e.message)).small().color(p.warning))
+                    .on_hover_text(format!("Checked on this computer with the {} rules. Only a warning: the server decides, and some extensions aren't known offline.", kind.label()));
+            }
+            (None, false) if !q.sql.trim().is_empty() && q.checked != 0 => {
+                ui.label(RichText::new(format!("✓ syntax OK ({})", kind.label())).small().color(p.text_lighter));
+            }
+            _ => {}
+        }
+        ui.label(RichText::new("Ctrl+Space suggest · Ctrl+Shift+F format · Ctrl+Shift+I lint · Ctrl+Enter run").small().color(p.text_lighter));
     });
     // drag handle between editor and results
     let (hr, hresp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 8.0), Sense::drag());
@@ -390,6 +522,19 @@ pub(super) fn query_view(ui: &mut egui::Ui, q: &mut QueryTab, id: u64, p: &Palet
     }
     if hresp.dragged() && total_h > 0.0 {
         q.split = ((ed_h + hresp.drag_delta().y) / total_h).clamp(0.12, 0.85);
+    }
+    // sqruff findings (Ctrl+Shift+I)
+    if let Some(rx) = &q.lint_rx {
+        if let Ok(r) = rx.try_recv() {
+            q.lint = Some(r);
+            q.lint_rx = None;
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+    if q.lint.is_some() || q.lint_rx.is_some() {
+        lint_panel(ui, q, id, p, kind, ed_id);
+        return;
     }
     if q.plan.is_some() {
         let mut close = false;

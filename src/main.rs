@@ -14,6 +14,7 @@ mod export;
 mod filter;
 mod finder;
 mod plan;
+mod sql;
 mod integrate;
 mod store;
 mod theme;
